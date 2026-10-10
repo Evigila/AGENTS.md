@@ -47,7 +47,7 @@ function Quote-NativeArgument([string]$Value) {
     return $builder.ToString()
 }
 
-function Invoke-Native([string]$Executable, [string[]]$Arguments, [string]$RawArguments = '', [hashtable]$Environment = @{}) {
+function Invoke-Native([string]$Executable, [string[]]$Arguments, [string]$RawArguments = '', [hashtable]$Environment = @{}, [AllowNull()][string]$StandardInput = $null) {
     $start = New-Object System.Diagnostics.ProcessStartInfo
     $start.FileName = $Executable
     $start.Arguments = if ($RawArguments) { $RawArguments }
@@ -56,6 +56,7 @@ function Invoke-Native([string]$Executable, [string[]]$Arguments, [string]$RawAr
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
+    $start.RedirectStandardInput = $true
     $start.EnvironmentVariables['GIT_TERMINAL_PROMPT'] = '0'
     foreach ($key in $Environment.Keys) { $start.EnvironmentVariables[$key] = [string]$Environment[$key] }
     $process = New-Object System.Diagnostics.Process
@@ -64,6 +65,8 @@ function Invoke-Native([string]$Executable, [string[]]$Arguments, [string]$RawAr
         [void]$process.Start()
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
+        if ($null -ne $StandardInput) { $process.StandardInput.Write($StandardInput) }
+        $process.StandardInput.Close()
         $process.WaitForExit()
         return [pscustomobject]@{
             ExitCode = $process.ExitCode
@@ -198,7 +201,7 @@ function Invoke-InstalledBatch([string]$From, [string[]]$ExtraArguments) {
     return Invoke-TestBatch $batchPath $batchArguments
 }
 
-function Invoke-TestBatch([string]$BatchPath, [string[]]$Arguments, [string]$Central = $centralSource, [hashtable]$ExtraEnvironment = @{}) {
+function Get-TestBatchEnvironment([string]$Central, [hashtable]$ExtraEnvironment = @{}) {
     # Rewrite only the central clone URL, inside this child process and descendants.
     # Do not alter production BAT contents or any global/project Git configuration.
     $environment = @{
@@ -214,8 +217,112 @@ function Invoke-TestBatch([string]$BatchPath, [string[]]$Arguments, [string]$Cen
         $environment['PATH'] = @($PSHOME, $gitDirectory, (Join-Path $env:SystemRoot 'System32'), $env:SystemRoot) -join [IO.Path]::PathSeparator
     }
     foreach ($key in $ExtraEnvironment.Keys) { $environment[$key] = [string]$ExtraEnvironment[$key] }
+    return $environment
+}
+
+function Invoke-TestBatch([string]$BatchPath, [string[]]$Arguments, [string]$Central = $centralSource, [hashtable]$ExtraEnvironment = @{}) {
+    $environment = Get-TestBatchEnvironment $Central $ExtraEnvironment
+    # Real historical launchers predate this switch and must keep exercising
+    # their original parameter surface in the compatibility regression.
+    if ([IO.File]::ReadAllText($BatchPath).Contains('-NonInteractive') -and ($Arguments.Count -eq 0 -or $Arguments[0] -ne '-NonInteractive')) {
+        $Arguments = @('-NonInteractive') + $Arguments
+    }
     $command = (Quote-NativeArgument $BatchPath) + ' ' + (($Arguments | ForEach-Object { Quote-NativeArgument $_ }) -join ' ')
     return Invoke-Native $env:ComSpec @() ('/d /s /c "' + $command + '"') $environment
+}
+
+function Start-InteractiveBatch([string]$BatchPath, [string[]]$Arguments = @(), [hashtable]$ExtraEnvironment = @{}) {
+    $environment = Get-TestBatchEnvironment $centralSource $ExtraEnvironment
+    $command = (Quote-NativeArgument $BatchPath) + ' ' + (($Arguments | ForEach-Object { Quote-NativeArgument $_ }) -join ' ')
+    $start = New-Object System.Diagnostics.ProcessStartInfo
+    $start.FileName = $env:ComSpec
+    $start.Arguments = '/d /s /c "' + $command + '"'
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardInput = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.EnvironmentVariables['GIT_TERMINAL_PROMPT'] = '0'
+    foreach ($key in $environment.Keys) { $start.EnvironmentVariables[$key] = [string]$environment[$key] }
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $start
+    try {
+        [void]$process.Start()
+        $session = [pscustomobject]@{
+            Process = $process
+            Text = New-Object System.Text.StringBuilder
+            Streams = @(
+                [pscustomobject]@{ Reader = $process.StandardOutput; Buffer = New-Object char[] 1024; Task = $null; Ended = $false }
+                [pscustomobject]@{ Reader = $process.StandardError; Buffer = New-Object char[] 1024; Task = $null; Ended = $false }
+            )
+        }
+        foreach ($stream in $session.Streams) { $stream.Task = $stream.Reader.ReadAsync($stream.Buffer, 0, $stream.Buffer.Length) }
+        return $session
+    } catch { $process.Dispose(); throw }
+}
+
+function Read-InteractiveOutput($Session) {
+    foreach ($stream in $Session.Streams) {
+        while (-not $stream.Ended -and $stream.Task.IsCompleted) {
+            $count = $stream.Task.GetAwaiter().GetResult()
+            if ($count -eq 0) { $stream.Ended = $true; break }
+            [void]$Session.Text.Append($stream.Buffer, 0, $count)
+            $stream.Task = $stream.Reader.ReadAsync($stream.Buffer, 0, $stream.Buffer.Length)
+        }
+    }
+    return $Session.Text.ToString()
+}
+
+function Wait-InteractiveOutput($Session, [string]$Pattern, [string]$Message, [int]$TimeoutMilliseconds = 60000) {
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        $output = Read-InteractiveOutput $Session
+        if ($output -match $Pattern) { return $output }
+        if ($Session.Process.HasExited) { throw "$Message (process exited early): $output" }
+        Start-Sleep -Milliseconds 20
+    } while ($timer.ElapsedMilliseconds -lt $TimeoutMilliseconds)
+    throw "$Message (timed out): $(Read-InteractiveOutput $Session)"
+}
+
+function Assert-InteractiveWaiting($Session, [string]$Message) {
+    # Observe a stable waiting state, including child-process output, without
+    # supplying the input which authorizes the next action.
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        [void](Read-InteractiveOutput $Session)
+        Assert-True (-not $Session.Process.HasExited) "$Message (process exited before input): $(Read-InteractiveOutput $Session)"
+        Start-Sleep -Milliseconds 20
+    } while ($timer.ElapsedMilliseconds -lt 250)
+}
+
+function Complete-InteractiveBatch($Session, [int]$Expected, [string]$Message) {
+    $Session.Process.StandardInput.WriteLine('')
+    $Session.Process.StandardInput.Close()
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        [void](Read-InteractiveOutput $Session)
+        if ($Session.Process.HasExited) {
+            while (@($Session.Streams | Where-Object { -not $_.Ended }).Count -gt 0 -and $timer.ElapsedMilliseconds -lt 60000) {
+                [void](Read-InteractiveOutput $Session)
+                Start-Sleep -Milliseconds 20
+            }
+            $result = [pscustomobject]@{ ExitCode = $Session.Process.ExitCode; Output = Read-InteractiveOutput $Session }
+            Assert-Exit $result $Expected $Message
+            return $result
+        }
+        Start-Sleep -Milliseconds 20
+    } while ($timer.ElapsedMilliseconds -lt 60000)
+    throw "$Message (timed out after closing input): $(Read-InteractiveOutput $Session)"
+}
+
+function Close-InteractiveBatch($Session) {
+    if ($null -ne $Session) {
+        if (-not $Session.Process.HasExited) {
+            $Session.Process.StandardInput.Close()
+            if (-not $Session.Process.WaitForExit(5000)) { $Session.Process.Kill() }
+        }
+        $Session.Process.Dispose()
+    }
 }
 
 function Assert-Exit($Result, [int]$Expected, [string]$Message, [string]$OutputPattern = '') {
@@ -294,6 +401,7 @@ try {
 
     $existingEntryProject = Join-Path $fixtureRoot 'project with existing script entry'
     Initialize-TestRepository $existingEntryProject
+    Write-TestText (Join-Path $existingEntryProject 'README.md') "Existing project-owned readme must survive entry migration.`n"
     $existingEntryPath = Join-Path $existingEntryProject 'debug-handler.bat'
     Write-TestText $existingEntryPath "@echo off`r`nrem Existing project-owned script dispatch.`r`n"
     $existingEntryBytes = Get-TestBytes $existingEntryPath
@@ -301,6 +409,22 @@ try {
     Assert-Equal $existingEntryBytes (Get-TestBytes $existingEntryPath) 'Initial installation replaced the existing project script entry.'
     $testCount++
     Write-Host 'PASS: Initial install preserves an existing custom debug-handler.bat.'
+    Write-TestBytes $existingEntryPath ([byte[]]@())
+    $existingProjectBeforeSeed = Get-ProjectSnapshot $existingEntryProject
+    Assert-Exit (Invoke-TestScript $installer @('-ProjectRoot', $existingEntryProject, '-SourcePath', $source, '-Repository', $source, '-Ref', 'main')) 0 'A current consumer initializes its historical zero-byte debug entry.'
+    Assert-Equal (Get-TestBytes (Join-Path $source 'debug-handler.bat')) (Get-TestBytes $existingEntryPath) 'Historical empty debug entry did not receive the interactive source seed.'
+    $existingEntryLock = Read-TestJson (Join-Path $existingEntryProject 'AGENTS.lock.json')
+    Assert-True ($null -eq $existingEntryLock.managedFiles.PSObject.Properties['debug-handler.bat']) 'Migrated debug entry must remain project-owned.'
+    # Seed migration changes only the entry itself. Allow the lock contents here
+    # because a substantive seed synchronization may refresh installation state.
+    $existingProjectAfterSeed = Get-ProjectSnapshot $existingEntryProject
+    Assert-Equal $existingProjectBeforeSeed.Count $existingProjectAfterSeed.Count 'Empty debug migration added unrelated project files or directories.'
+    foreach ($key in $existingProjectBeforeSeed.Keys) {
+        if ($key -in @('file:debug-handler.bat', 'file:AGENTS.lock.json')) { continue }
+        Assert-Equal $existingProjectBeforeSeed[$key] $existingProjectAfterSeed[$key] "Empty debug migration changed unrelated project content: $key"
+    }
+    $testCount++
+    Write-Host 'PASS: An existing zero-byte debug-handler.bat receives the menu seed without taking ownership of the entry or changing unrelated project content.'
 
     Initialize-TestRepository $project
     Write-TestText (Join-Path $project 'README.md') "Project readme.`n"
@@ -334,12 +458,12 @@ try {
     Assert-True ([IO.Directory]::Exists((Join-Path $project 'scripts'))) 'Required scripts directory was not installed.'
     $debugHandlerPath = Join-Path $project 'debug-handler.bat'
     Assert-True ([IO.File]::Exists($debugHandlerPath)) 'Missing project script entry seed was not installed.'
-    Assert-Equal 0 ([IO.File]::ReadAllBytes($debugHandlerPath).Length) 'Initial project script entry must be empty.'
+    Assert-Equal (Get-TestBytes (Join-Path $source 'debug-handler.bat')) (Get-TestBytes $debugHandlerPath) 'Initial project script entry must match the source interactive seed.'
     Assert-True ($null -eq $lock.managedFiles.PSObject.Properties['debug-handler.bat']) 'Project script entry must not be managed by the lock.'
     $testCount++
     Write-Host 'PASS: Initial install preserves UTF-16 configuration, project files, index, HEAD, and origin.'
     $testCount++
-    Write-Host 'PASS: Initial install creates an empty project-owned debug-handler.bat seed.'
+    Write-Host 'PASS: Initial install creates the interactive project-owned debug-handler.bat seed.'
     Assert-ReadOnlySync $source @('-Check') 0 'Current Check succeeds without rewriting the lock.'
     Assert-ReadOnlySync $source @() 0 'Current installer is a no-op without rewriting the lock.'
     $normalizationPath = Join-Path $project 'docs-ai/common/rules.md'
@@ -354,6 +478,9 @@ try {
     $windows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
     if ($windows) {
         Assert-ReadOnlySync $source @('-Check') 0 'Installed BAT propagates current Check exit code 0.' -Batch
+        $interactiveProject = Join-Path $fixtureRoot 'interactive entry project'
+        Initialize-TestRepository $interactiveProject
+        Assert-Exit (Invoke-TestScript $installer @('-ProjectRoot', $interactiveProject, '-SourcePath', $source, '-Repository', $source, '-Ref', 'main')) 0 'Prepare an independently installed consumer for interactive BAT checks.'
     } else {
         $skipCount++
         Write-Host 'SKIP: Installed BAT execution requires Windows.'
@@ -378,6 +505,249 @@ try {
     Assert-Exit (Invoke-TestScript $publisher @('-Version', '1.0.1')) 0 'Publisher prepares version 1.0.1.'
     Assert-Exit (Invoke-TestScript $publisher @('-Check')) 0 'Publisher verifies version 1.0.1 payload hashes.'
     $upgradeCommit = Commit-TestRepository $source 'Publish 1.0.1 with managed addition and removal'
+    if ($windows) {
+        $interactiveBatch = Join-Path $interactiveProject 'fetch-agents.bat'
+        $interactiveSnapshot = Get-ProjectSnapshot $interactiveProject
+        $interactiveLockPath = Join-Path $interactiveProject 'AGENTS.lock.json'
+        $interactiveLockTime = [IO.File]::GetLastWriteTimeUtc($interactiveLockPath).Ticks
+        $gitTrace = Join-Path $fixtureRoot 'interactive-before-selection.git-trace'
+        $interactive = $null
+        try {
+            $interactive = Start-InteractiveBatch $interactiveBatch @() @{ GIT_TRACE = $gitTrace }
+            [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'Double-click entry did not present its menu.')
+            Assert-InteractiveWaiting $interactive 'Menu must wait for a selection before acquiring the framework.'
+            Assert-Snapshot $interactiveSnapshot $interactiveProject 'Menu changed the project before input'
+            Assert-True (-not [IO.File]::Exists($gitTrace)) 'Menu invoked Git before the user selected an operation.'
+            $interactive.Process.StandardInput.WriteLine('2')
+            [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Check did not present the completion prompt.')
+            Assert-InteractiveWaiting $interactive 'Check must wait at completion before closing the console.'
+            Assert-Snapshot $interactiveSnapshot $interactiveProject 'Menu Check wrote to the project'
+            Assert-Equal $interactiveLockTime ([IO.File]::GetLastWriteTimeUtc($interactiveLockPath).Ticks) 'Menu Check rewrote the lock.'
+            [void](Complete-InteractiveBatch $interactive 2 'Menu Check retains the available-update exit code after completion input.')
+            $testCount++
+            Write-Host 'PASS: Interactive Check waits before Git/project work, remains read-only, waits again at completion, and returns exit code 2.'
+        } finally { Close-InteractiveBatch $interactive }
+
+        $interactive = $null
+        try {
+            $interactive = Start-InteractiveBatch $interactiveBatch
+            [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'Default Update did not present its menu.')
+            $interactive.Process.StandardInput.WriteLine('')
+            [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Default Update did not present its completion prompt.')
+            Assert-InteractiveWaiting $interactive 'Default Update must wait at completion.'
+            Assert-Equal '1.0.1' (Read-TestJson $interactiveLockPath).frameworkVersion 'Empty Enter did not select Update.'
+            [void](Complete-InteractiveBatch $interactive 0 'Default Update retains success after completion input.')
+            $testCount++
+            Write-Host 'PASS: Empty Enter chooses Update and the self-updating BAT waits before returning success.'
+        } finally { Close-InteractiveBatch $interactive }
+
+        $interactiveRulesPath = Join-Path $interactiveProject 'docs-ai/common/rules.md'
+        Write-TestText $interactiveRulesPath ([IO.File]::ReadAllText($interactiveRulesPath, $utf8) + "`nInteractive local customization.`n")
+        $interactiveCustomBytes = Get-TestBytes $interactiveRulesPath
+        $interactiveSnapshot = Get-ProjectSnapshot $interactiveProject
+        $interactive = $null
+        try {
+            $interactive = Start-InteractiveBatch $interactiveBatch
+            [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'Conflicting Check did not present its menu.')
+            $interactive.Process.StandardInput.WriteLine('2')
+            [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Conflicting Check did not wait at completion.')
+            Assert-InteractiveWaiting $interactive 'Conflicting Check must wait at completion.'
+            Assert-Snapshot $interactiveSnapshot $interactiveProject 'Conflicting menu Check changed the project'
+            [void](Complete-InteractiveBatch $interactive 3 'Menu Check retains its conflict exit code after completion input.')
+            $testCount++
+            Write-Host 'PASS: Interactive Check preserves local conflicts and returns exit code 3 after the completion wait.'
+        } finally { Close-InteractiveBatch $interactive }
+
+        $interactive = $null
+        try {
+            $interactive = Start-InteractiveBatch $interactiveBatch
+            [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'Force did not present its menu.')
+            $interactive.Process.StandardInput.WriteLine('3')
+            [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Force did not wait at completion.')
+            Assert-InteractiveWaiting $interactive 'Force must wait at completion.'
+            [void](Complete-InteractiveBatch $interactive 0 'Force menu selection completes successfully.')
+            $interactiveBackups = @([IO.Directory]::GetFiles((Join-Path $interactiveProject '.agents/backups'), 'rules.md', [IO.SearchOption]::AllDirectories))
+            Assert-Equal 1 $interactiveBackups.Count 'Force menu must back up a local conflict once.'
+            Assert-Equal $interactiveCustomBytes (Get-TestBytes $interactiveBackups[0]) 'Force menu backup did not preserve customized bytes.'
+            Assert-Equal (Get-TestBytes $rulesSource) (Get-TestBytes $interactiveRulesPath) 'Force menu did not restore the verified source.'
+            $testCount++
+            Write-Host 'PASS: Force menu restores managed content with an exact backup and waits before success.'
+        } finally { Close-InteractiveBatch $interactive }
+
+        $interactiveSnapshot = Get-ProjectSnapshot $interactiveProject
+        $confirmationTrace = Join-Path $fixtureRoot 'interactive-explicit-confirmation.git-trace'
+        $interactive = $null
+        try {
+            $interactive = Start-InteractiveBatch $interactiveBatch @('-Check', '-NonInteractive') @{ GIT_TRACE = $confirmationTrace }
+            [void](Wait-InteractiveOutput $interactive 'Press Enter to run the supplied options' 'Explicit options bypassed the required confirmation.')
+            Assert-InteractiveWaiting $interactive 'Explicit options must wait for confirmation.'
+            Assert-Snapshot $interactiveSnapshot $interactiveProject 'Explicit options changed the project before confirmation'
+            Assert-True (-not [IO.File]::Exists($confirmationTrace)) 'Explicit options invoked Git before confirmation.'
+            $interactive.Process.StandardInput.WriteLine('')
+            [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Confirmed Check did not wait at completion.')
+            Assert-InteractiveWaiting $interactive 'Confirmed Check must wait at completion.'
+            Assert-Snapshot $interactiveSnapshot $interactiveProject 'Confirmed explicit Check changed the project'
+            [void](Complete-InteractiveBatch $interactive 0 'Confirmed explicit Check retains current exit code 0.')
+            $testCount++
+            Write-Host 'PASS: Explicit CLI options require Enter before acquisition; a later NonInteractive switch does not bypass either wait.'
+        } finally { Close-InteractiveBatch $interactive }
+
+        # Only the disposable consumer contains these invalid images. The BAT
+        # resolves its real shell before pushd; confirmation then fails in the
+        # consumer, and popd restores the real shell for the completion prompt.
+        # This exercises shell startup failure without replacing an installed
+        # executable, changing production BAT text, or adding a test dependency.
+        $confirmationFailureImages = @(
+            (Join-Path $interactiveProject 'pwsh.exe')
+            (Join-Path $interactiveProject 'powershell.exe')
+        )
+        foreach ($imagePath in $confirmationFailureImages) { Write-TestBytes $imagePath ([byte[]]@()) }
+        $confirmationFailureSnapshot = Get-ProjectSnapshot $interactiveProject
+        $confirmationFailureTrace = Join-Path $fixtureRoot 'interactive-confirmation-failure.git-trace'
+        $interactive = $null
+        try {
+            $interactive = Start-InteractiveBatch $interactiveBatch @('-Check') @{ GIT_TRACE = $confirmationFailureTrace }
+            [void](Wait-InteractiveOutput $interactive 'Cannot read the supplied-options confirmation\.' 'Shell confirmation failure was mistaken for authorization.')
+            [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Confirmation failure did not wait at completion.')
+            Assert-InteractiveWaiting $interactive 'Confirmation failure must keep the completion console open.'
+            Assert-Snapshot $confirmationFailureSnapshot $interactiveProject 'Confirmation shell failure changed the project'
+            Assert-True (-not [IO.File]::Exists($confirmationFailureTrace)) 'Confirmation shell failure invoked Git.'
+            [void](Complete-InteractiveBatch $interactive 1 'Confirmation shell failure returns failure after completion input.')
+            $testCount++
+            Write-Host 'PASS: A local test-only shell startup failure cannot authorize Update and still waits before returning failure.'
+        } finally {
+            Close-InteractiveBatch $interactive
+            foreach ($imagePath in $confirmationFailureImages) { [IO.File]::Delete($imagePath) }
+        }
+
+        $invalidTrace = Join-Path $fixtureRoot 'interactive-invalid-selection.git-trace'
+        $interactive = $null
+        try {
+            $interactive = Start-InteractiveBatch $interactiveBatch @() @{ GIT_TRACE = $invalidTrace }
+            [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'Invalid-input check did not present its menu.')
+            $interactive.Process.StandardInput.WriteLine('invalid')
+            [void](Wait-InteractiveOutput $interactive 'Invalid selection\.' 'Invalid input did not return to the menu.')
+            Assert-InteractiveWaiting $interactive 'Invalid menu input must not authorize an operation.'
+            Assert-Snapshot $interactiveSnapshot $interactiveProject 'Invalid menu input changed the project'
+            Assert-True (-not [IO.File]::Exists($invalidTrace)) 'Invalid menu input invoked Git.'
+            $interactive.Process.StandardInput.Close()
+            Assert-True ($interactive.Process.WaitForExit(30000)) 'EOF after invalid menu input did not cancel promptly.'
+            Assert-Exit ([pscustomobject]@{ ExitCode = $interactive.Process.ExitCode; Output = Read-InteractiveOutput $interactive }) 0 'EOF cancels instead of selecting the default update.'
+            Assert-Snapshot $interactiveSnapshot $interactiveProject 'EOF cancellation changed the project'
+            Assert-True (-not [IO.File]::Exists($invalidTrace)) 'EOF cancellation invoked Git.'
+            $testCount++
+            Write-Host 'PASS: Invalid input and EOF never authorize default Update or invoke Git.'
+        } finally { Close-InteractiveBatch $interactive }
+
+        $cancelTrace = Join-Path $fixtureRoot 'interactive-cancelled-menu.git-trace'
+        $interactive = $null
+        try {
+            $interactive = Start-InteractiveBatch $interactiveBatch @() @{ GIT_TRACE = $cancelTrace }
+            [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'Cancellation check did not present its menu.')
+            $interactive.Process.StandardInput.WriteLine('0')
+            [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Cancelled Update did not wait before closing.')
+            Assert-InteractiveWaiting $interactive 'A cancelled Update must retain the console until completion input.'
+            Assert-Snapshot $interactiveSnapshot $interactiveProject 'Cancelled Update changed the project'
+            Assert-True (-not [IO.File]::Exists($cancelTrace)) 'Cancelled Update invoked Git.'
+            [void](Complete-InteractiveBatch $interactive 0 'Cancellation retains success after completion input.')
+            $testCount++
+            Write-Host 'PASS: Menu cancellation waits before closing, performs no Git/project work, and returns exit code 0.'
+        } finally { Close-InteractiveBatch $interactive }
+
+        $debugBatch = Join-Path $interactiveProject 'debug-handler.bat'
+        $debugMarker = Join-Path $fixtureRoot 'interactive-debug-dispatched.txt'
+        $debugOperation = Join-Path $interactiveProject 'scripts/debug.bat'
+        Write-TestText $debugOperation ("@echo off`r`n>" + (Quote-NativeArgument $debugMarker) + " echo debug`r`nexit /b 0`r`n")
+        $interactiveSnapshot = Get-ProjectSnapshot $interactiveProject
+        $interactive = $null
+        try {
+            $interactive = Start-InteractiveBatch $debugBatch
+            [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'Debug entry did not present its menu.')
+            Assert-InteractiveWaiting $interactive 'Debug entry must wait for a selection.'
+            Assert-True (-not [IO.File]::Exists($debugMarker)) 'Debug operation started before menu input.'
+            Assert-Snapshot $interactiveSnapshot $interactiveProject 'Debug entry changed the project before selection'
+            $interactive.Process.StandardInput.WriteLine('')
+            [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Default Debug did not wait at completion.')
+            Assert-InteractiveWaiting $interactive 'Default Debug must wait at completion.'
+            Assert-True ([IO.File]::Exists($debugMarker)) 'Empty Enter did not dispatch the configured Debug operation.'
+            [void](Complete-InteractiveBatch $interactive 0 'Default Debug preserves the operation success code.')
+            Assert-Snapshot $interactiveSnapshot $interactiveProject 'Debug dispatch changed unrelated project files'
+            $testCount++
+            Write-Host 'PASS: Debug menu waits for input, defaults to its configured Debug script, and waits before success.'
+        } finally { Close-InteractiveBatch $interactive }
+
+        $interactive = $null
+        try {
+            $interactive = Start-InteractiveBatch $debugBatch
+            [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'Unconfigured operation did not present its menu.')
+            $interactive.Process.StandardInput.WriteLine('2')
+            [void](Wait-InteractiveOutput $interactive 'Operation is not configured: scripts/clear-database' 'Missing operation did not explain its missing script.')
+            [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Missing operation did not wait at completion.')
+            Assert-InteractiveWaiting $interactive 'Missing operation must wait before returning its failure.'
+            [void](Complete-InteractiveBatch $interactive 1 'Missing operation preserves failure after completion input.')
+            Assert-Snapshot $interactiveSnapshot $interactiveProject 'Missing operation changed the project'
+            $testCount++
+            Write-Host 'PASS: An unconfigured project operation reports its missing script, waits, and returns exit code 1.'
+        } finally { Close-InteractiveBatch $interactive }
+
+        # A child BAT using plain exit terminates its own cmd process. It must
+        # not terminate the unified entry or suppress the completion prompt.
+        Write-TestText $debugOperation ("@echo off`r`n>" + (Quote-NativeArgument $debugMarker) + " echo debug failed`r`nexit 37`r`n")
+        $interactiveSnapshot = Get-ProjectSnapshot $interactiveProject
+        $interactive = $null
+        try {
+            $interactive = Start-InteractiveBatch $debugBatch
+            [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'Failing Debug did not present its menu.')
+            $interactive.Process.StandardInput.WriteLine('1')
+            [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Child BAT exit closed the entry without completion input.')
+            Assert-InteractiveWaiting $interactive 'Child BAT exit must leave the parent waiting at completion.'
+            [void](Complete-InteractiveBatch $interactive 37 'The entry preserves a child BAT exit code of 37.')
+            Assert-Equal "debug failed`r`n" ([IO.File]::ReadAllText($debugMarker)) 'Failing Debug did not run the selected child BAT.'
+            Assert-Snapshot $interactiveSnapshot $interactiveProject 'Failing Debug changed unrelated project files'
+            $testCount++
+            Write-Host 'PASS: A child BAT using exit 37 leaves the entry waiting, then returns the exact child exit code.'
+        } finally { Close-InteractiveBatch $interactive }
+
+        $clearOperation = Join-Path $interactiveProject 'scripts/clear-database.ps1'
+        $clearMarker = Join-Path $fixtureRoot 'interactive-clear-dispatched.txt'
+        Write-TestText $clearOperation ("[IO.File]::WriteAllText('" + $clearMarker.Replace("'", "''") + "', 'PowerShell fallback executed')`nexit 29`n")
+        $interactiveSnapshot = Get-ProjectSnapshot $interactiveProject
+        $interactive = $null
+        try {
+            $interactive = Start-InteractiveBatch $debugBatch
+            [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'PowerShell fallback did not present its menu.')
+            Assert-True (-not [IO.File]::Exists($clearMarker)) 'PowerShell operation executed before selection.'
+            $interactive.Process.StandardInput.WriteLine('2')
+            [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'PowerShell fallback did not wait at completion.')
+            Assert-InteractiveWaiting $interactive 'A failed PowerShell operation must wait before closing.'
+            Assert-Equal 'PowerShell fallback executed' ([IO.File]::ReadAllText($clearMarker)) 'A missing operation BAT did not fall back to its PS1.'
+            [void](Complete-InteractiveBatch $interactive 29 'The entry preserves a PowerShell fallback exit code of 29.')
+            Assert-Snapshot $interactiveSnapshot $interactiveProject 'PowerShell fallback changed unrelated project files'
+            $testCount++
+            Write-Host 'PASS: A PS1 operation fallback runs only after selection, waits at completion, and preserves its nonzero exit code.'
+        } finally { Close-InteractiveBatch $interactive }
+
+        $debugMarkerBeforeCancel = Get-TestBytes $debugMarker
+        $clearMarkerBeforeCancel = Get-TestBytes $clearMarker
+        $debugMarkerTimeBeforeCancel = [IO.File]::GetLastWriteTimeUtc($debugMarker).Ticks
+        $clearMarkerTimeBeforeCancel = [IO.File]::GetLastWriteTimeUtc($clearMarker).Ticks
+        $interactive = $null
+        try {
+            $interactive = Start-InteractiveBatch $debugBatch
+            [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'Debug cancellation did not present its menu.')
+            $interactive.Process.StandardInput.WriteLine('0')
+            [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Cancelled Debug did not wait at completion.')
+            Assert-InteractiveWaiting $interactive 'A cancelled Debug must wait before closing.'
+            [void](Complete-InteractiveBatch $interactive 0 'Debug cancellation retains exit code 0 after completion input.')
+            Assert-Equal $debugMarkerBeforeCancel (Get-TestBytes $debugMarker) 'Debug cancellation executed the Debug operation.'
+            Assert-Equal $clearMarkerBeforeCancel (Get-TestBytes $clearMarker) 'Debug cancellation executed the database operation.'
+            Assert-Equal $debugMarkerTimeBeforeCancel ([IO.File]::GetLastWriteTimeUtc($debugMarker).Ticks) 'Debug cancellation rewrote the Debug execution marker.'
+            Assert-Equal $clearMarkerTimeBeforeCancel ([IO.File]::GetLastWriteTimeUtc($clearMarker).Ticks) 'Debug cancellation rewrote the database execution marker.'
+            Assert-Snapshot $interactiveSnapshot $interactiveProject 'Debug cancellation changed project files'
+            $testCount++
+            Write-Host 'PASS: Debug cancellation waits before closing and invokes no configured operation.'
+        } finally { Close-InteractiveBatch $interactive }
+    }
     Assert-ReadOnlySync $source @('-Check') 2 'Upgrade Check reports an update without changing project bytes.'
     if ($windows) {
         Assert-ReadOnlySync $source @('-Check') 2 'Installed BAT propagates available-update Check exit code 2.' -Batch

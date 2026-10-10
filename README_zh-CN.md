@@ -42,10 +42,16 @@ fetch-agents.bat -Check
 | `docs/` | 你应当人工维护的文档，面向人类 |
 | `fetch-agents.bat`, `scripts/fetch-agents.ps1` | 快捷处理器，快速检查和同步 |
 | `scripts/` | AI 创建的脚本应放在这里， 根目录只允许 `debug-handler.bat` 和 `fetch-agents.bat`。 |
-| `debug-handler.bat` | 项目操作统一入口，初始为空 |
+| `debug-handler.bat` | 项目操作菜单，调用 `scripts/` 下已配置的实现 |
 | `templates/`, publisher, tests, CI, README | 不会被复制到你的仓库 |
 
 ## 使用命令
+
+双击 `fetch-agents.bat` 后显示 `1 Update`、`2 Check`、`3 Force`、`0 Exit`，收到输入前不会开始操作。直接回车选择 Update，非法输入会重新提示。使用显式命令行参数时，也需要回车确认。操作成功、失败或取消后，再按回车关闭窗口。
+
+无人值守调用必须把 `-NonInteractive` 放在第一个参数，例如 `fetch-agents.bat -NonInteractive -Check`。该开关跳过开始与结束等待，校验、备份和操作退出码保持有效。
+
+`debug-handler.bat` 使用相同交互规范，菜单为 `1 Debug`、`2 Clear database`、`3 Publish tag`、`4 Publish NuGet`、`0 Exit`，直接回车选择 Debug。对应调用 `scripts/debug`、`clear-database`、`publish-tag` 或 `publish-nuget`，优先 `.bat`，其次 `.ps1`。框架只提供菜单；未配置项目实现的操作会提示未配置。自动化可使用 `debug-handler.bat -NonInteractive 1`，或其他菜单编号。
 
 - 检查更新
 
@@ -91,7 +97,7 @@ fetch-agents.bat -Check
 
 ## 排除
 
-项目当前的 `current/` 文档、`AGENTS.ensure.json` 和 `debug-handler.bat` 仅在缺失时初始化。已有内容始终保留，包括使用 `-Force` 时。`-Force` 仅替换存在冲突的受管框架文件，并在 `.agents/backups/` 下生成备份。
+项目当前的 `current/` 文档和 `AGENTS.ensure.json` 仅在缺失时初始化。项目自有的 `debug-handler.bat` 在缺失或仍为旧版零字节入口时初始化菜单；已有非空自定义内容始终保留，包括使用 `-Force` 时。`-Force` 仅替换存在冲突的受管框架文件，并在 `.agents/backups/` 下生成备份。
 
 如果你对 -Force 覆盖有信心，可以删除备份。不过推荐过一个提交再删除，以保留一份 Git 历史避免不时之需。
 

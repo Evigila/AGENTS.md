@@ -45,13 +45,13 @@ jobs:
             git init --quiet $target
             if ($LASTEXITCODE -ne 0) { throw 'Fixture Git init failed.' }
             Copy-Item ./fetch-agents.bat (Join-Path $target 'fetch-agents.bat')
-            & (Join-Path $target 'fetch-agents.bat') -SourcePath $env:GITHUB_WORKSPACE -Ref $env:GITHUB_SHA -Check
+            & (Join-Path $target 'fetch-agents.bat') -NonInteractive -SourcePath $env:GITHUB_WORKSPACE -Ref $env:GITHUB_SHA -Check
             if ($LASTEXITCODE -ne 2) { throw 'Fresh bootstrap Check must return 2.' }
             if (Test-Path (Join-Path $target 'AGENTS.lock.json')) { throw 'Check wrote a lock.' }
             if (Test-Path (Join-Path $target 'scripts')) { throw 'Check installed scripts.' }
-            & (Join-Path $target 'fetch-agents.bat') -SourcePath $env:GITHUB_WORKSPACE -Ref $env:GITHUB_SHA
+            & (Join-Path $target 'fetch-agents.bat') -NonInteractive -SourcePath $env:GITHUB_WORKSPACE -Ref $env:GITHUB_SHA
             if ($LASTEXITCODE -ne 0) { throw 'Fresh bootstrap install failed.' }
-            & (Join-Path $target 'fetch-agents.bat') -SourcePath $env:GITHUB_WORKSPACE -Check
+            & (Join-Path $target 'fetch-agents.bat') -NonInteractive -SourcePath $env:GITHUB_WORKSPACE -Check
             if ($LASTEXITCODE -ne 0) { throw 'Installed bootstrap Check failed or did not retain the commit pin.' }
           } finally {
             Remove-Item -LiteralPath $target -Recurse -Force

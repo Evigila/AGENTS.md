@@ -55,7 +55,7 @@ The following paths are required. Directory entries ending in `/` denote directo
 | `AGENTS.lock.json` | Installed source commit, version, and managed-file baselines; generated in consumer projects |
 | `scripts/` | Project operation scripts and the framework synchronization implementation |
 | `fetch-agents.bat` and `scripts/fetch-agents.ps1` | Framework initialization, version checks, and synchronization |
-| `debug-handler.bat` | Initially empty, project-owned unified entry point for project operations |
+| `debug-handler.bat` | Project-owned operation entry point with an interactive menu seed |
 | `docs/` and `docs/.gitkeep` | Human documentation area and empty directory marker |
 | `docs-ai/common/codedesign.md` | Shared code standards |
 | `docs-ai/common/rules.md` | Shared workflow and documentation rules |
@@ -130,7 +130,7 @@ Use `.agents/skills/` for repository-scoped skill packages. A package must conta
 
 `AGENTS.framework.json` describes one stable `major.minor.patch` release and lists the exact source/target paths, normalized SHA-256 hashes, and managed/seed modes. Bump the release version whenever the installed manifest or payload changes. The manifest cannot include its own hash; `AGENTS.lock.json` records that digest with the resolved source commit.
 
-The Windows synchronization entry point is `fetch-agents.bat`. On every invocation it obtains the controller from the central repository's `main` branch in temporary storage and verifies the controller and launcher against that commit's manifest before execution. Central `launcherProtocolVersion: 1` is the stable invocation contract: argument forwarding, the process-local default root, and independent launcher preservation. Keep this contract compatible as the payload's installer protocol evolves; do not use the installer protocol as the launcher's compatibility gate. Do not prefer or fall back to the installed project script. Explicit `-ProjectRoot` selects a target project; otherwise use the launcher's directory. Acquisition or validation failures must stop without project writes.
+The Windows synchronization entry point is `fetch-agents.bat`. After any required input, every synchronization or check obtains the controller from the central repository's `main` branch in temporary storage and verifies the controller and launcher against that commit's manifest before execution. Central `launcherProtocolVersion: 1` is the stable invocation contract: argument forwarding, the process-local default root, and independent launcher preservation. Keep this contract compatible as the payload's installer protocol evolves; do not use the installer protocol as the launcher's compatibility gate. Do not prefer or fall back to the installed project script. Explicit `-ProjectRoot` selects a target project; otherwise use the launcher's directory. Acquisition or validation failures must stop without project writes.
 
 Keep the launcher independent of the selected framework payload. During BAT-driven synchronization, validate every target payload but install the verified central launcher rather than a historical target launcher. The lock's managed-file hash must reflect the actual launcher; optional `launcher` metadata records its central repository/ref/commit/hash separately from the framework repository/ref/commit. Framework rollback must retain a launcher capable of updating again. Record launcher provenance when a substantive synchronization writes the lock; do not rewrite an otherwise current lock solely to add metadata.
 
@@ -140,7 +140,7 @@ The optional `installerProtocolVersion` supports source-snapshot handoff. Protoc
 
 Run `fetch-agents.bat -Check` to check without modifying project files. Run the launcher without `-Check` to apply an authorized update. A request to update the framework authorizes its listed managed changes, not arbitrary project modifications. Do not perform a network version check during every unrelated development task.
 
-Updates manage only manifest-listed public files and files recorded as owned in the existing lock. Seed templates initialize missing project files and never overwrite existing `current/` content, `AGENTS.ensure.json`, or `debug-handler.bat`, including with `-Force`. Preserve user-created skills and unrelated files. Do not copy central project facts into consumer projects.
+Updates manage only manifest-listed public files and files recorded as owned in the existing lock. Seed templates initialize missing project files and never overwrite existing `current/` content, `AGENTS.ensure.json`, or nonempty `debug-handler.bat`, including with `-Force`. The legacy zero-byte `debug-handler.bat` may be initialized with the interactive menu seed. Preserve user-created skills and unrelated files. Do not copy central project facts into consumer projects.
 
 Detect modifications against the last imported content hashes, including committed local customizations. Stop on a conflict unless replacement is explicitly authorized. `-Force` backs up conflicting existing files before replacement and may permit an intentional downgrade; it never overrides project-file protection, path validation, or payload validation.
 
@@ -160,7 +160,17 @@ Keep project operation scripts under the root `scripts/` directory. AI must not 
 
 Project operations such as starting the project for debugging, clearing a database, publishing remote Git tags, or publishing NuGet packages must use the root `debug-handler.bat` as their unified entry point. Separate scripts may implement these operations under `scripts/`; invoke them through `debug-handler.bat` rather than creating additional root launchers. `fetch-agents.bat` remains the entry point for framework synchronization.
 
-Initialize `debug-handler.bat` as an empty file. Add project-specific dispatch or commands when implementing an authorized operation. The file belongs to the project: framework installation seeds it only when missing, and framework updates preserve its existing contents.
+Initialize `debug-handler.bat` with the interactive menu seed. It dispatches to project-owned operation implementations under `scripts/`; a missing implementation reports that the operation is not configured. Seed the entry point when missing or still zero bytes from legacy initialization; preserve any nonempty project customization, including with `-Force`.
+
+### BAT interaction contract
+
+Every project BAT entry point must wait for user input before beginning an operation when launched normally, including by double-click. Show numbered menu choices and mark the first as the default. An empty Enter selects the first choice; invalid input repeats the prompt without running an operation. End-of-input cancels rather than being treated as the default selection.
+
+`fetch-agents.bat` offers `1 Update`, `2 Check`, `3 Force`, and `0 Exit`. Explicit command-line options require Enter confirmation before execution. `debug-handler.bat` offers `1 Debug`, `2 Clear database`, `3 Publish tag`, `4 Publish NuGet`, and `0 Exit`; its seed dispatches to `scripts/debug`, `clear-database`, `publish-tag`, or `publish-nuget` implementations, preferring `.bat` then `.ps1`. Add or adapt project operations within the user's authorized scope.
+
+After success, failure or cancellation, wait for another input before exiting the entry point. Preserve the operation's exit code across that wait, restore the working directory, and use `exit /b` so a caller's shell is not forcibly closed. Invoke child BAT operations in an isolated command process so their `exit` cannot close the parent entry point.
+
+Unattended automation must explicitly place `-NonInteractive` first. This opts out of the initial prompt and final wait; no environment detection may silently bypass confirmation. Pass synchronization options after that switch, or an operation number after it for `debug-handler.bat`. Automation and verification must opt in rather than relying on interactive defaults.
 
 ## Implementation and verification
 

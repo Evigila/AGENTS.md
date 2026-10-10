@@ -14,6 +14,8 @@ description: Initialize, check, or update the repository's shared AGENTS framewo
 
 On Windows, keep installation, checking, updating, and rollback behind `fetch-agents.bat`. It obtains a verified current controller on every run and preserves the current launcher even when the requested payload is historical. Acquisition failures must not fall back to an installed script.
 
+Normal BAT invocation requires input before an operation and again before closing. Use its menu or confirm explicit options. For authorized unattended execution, place `-NonInteractive` first, for example `fetch-agents.bat -NonInteractive -Check`; this bypasses only interaction, not conflict or payload validation. Follow the BAT interaction contract in the shared rules.
+
 An already deployed legacy BAT lacks this acquisition path. Migrate through a verified current `fetch-agents.bat -ProjectRoot <target-root>`, using the same check or authorized update. Keep the consumer lock and installed files until normal synchronization runs; do not replace its PS1 by hand or remove its lock. A successful `-Check` does not authorize an update. After migration, use the consumer's own BAT for every operation. Do not present manual invocation of a central PS1 as the Windows recovery workflow.
 
 For first-time installation, use the documented bootstrap in the central repository README or run its installer against the target root. Never copy the central repository's `current/` facts into the target, and never substitute a broad `git restore` for the manifest-based installer.

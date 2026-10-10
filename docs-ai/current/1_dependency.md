@@ -4,7 +4,7 @@
 
 This repository distributes text instructions and a manifest-based PowerShell installer. There are no package-manager manifests, application projects, NuGet/npm packages, local project references, fonts, icons, databases, or deployed application services. No third-party PowerShell modules or Pester packages are required.
 
-Evidence: `scripts/fetch-agents.ps1`, `scripts/publish-framework.ps1`, `fetch-agents.bat`, `tests/test-sync.ps1`, and `.github/workflows/verify.yml`. The root `debug-handler.bat` is an empty seed and introduces no dependency. BAT operations acquire the central controller on every run, even when the selected payload is local. Integration tests redirect the central Git URL through child-process-only Git configuration to temporary local repositories; no global configuration or network is required. Hosted checkout and live bootstrap smoke verification require network access.
+Evidence: `scripts/fetch-agents.ps1`, `scripts/publish-framework.ps1`, `fetch-agents.bat`, `debug-handler.bat`, `tests/test-sync.ps1`, and `.github/workflows/verify.yml`. Both BAT menus reuse existing PowerShell/.NET console input; debug dispatch uses Windows CMD or PowerShell according to the project script. No additional tool or package is introduced. BAT synchronization acquires the central controller after input confirmation, even when the selected payload is local. Integration tests redirect the central Git URL through child-process-only Git configuration to temporary local repositories and drive menu stdin through native processes; no global configuration or network is required. Hosted checkout and live bootstrap smoke verification require network access.
 
 ## Direct tools, runtimes, and services
 

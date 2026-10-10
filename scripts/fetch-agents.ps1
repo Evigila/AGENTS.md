@@ -7,6 +7,7 @@ param(
     [string]$SourcePath,
     [Parameter(DontShow)]
     [string]$ResolvedCommit,
+    [switch]$NonInteractive,
     [switch]$Check,
     [switch]$Force
 )
@@ -304,6 +305,9 @@ try {
         if ($entry.mode -eq 'seed') {
             if (Test-Path -LiteralPath $target) {
                 if (-not [IO.File]::Exists($target)) { throw "Expected a regular project file: $target" }
+                if ($relative -eq 'debug-handler.bat' -and ([IO.File]::ReadAllBytes($target)).Length -eq 0 -and $entry.bytes.Length -gt 0) {
+                    $operations.Add([pscustomobject]@{ relative = $relative; path = $target; bytes = $entry.bytes; delete = $false })
+                }
             } else { $operations.Add([pscustomobject]@{ relative = $relative; path = $target; bytes = $entry.bytes; delete = $false }) }
             continue
         }

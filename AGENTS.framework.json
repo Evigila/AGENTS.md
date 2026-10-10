@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "installerProtocolVersion": 2,
-  "frameworkVersion": "1.2.0",
+  "frameworkVersion": "1.2.1",
   "repository": "Evigila/AGENTS.md",
   "files": [
     {
@@ -14,25 +14,25 @@
       "source": "fetch-agents.bat",
       "target": "fetch-agents.bat",
       "mode": "managed",
-      "sha256": "324ee031851b3e52cc7651b462753a067bc4ae41aa18f4b879f18d6d87a20fe9"
+      "sha256": "2e08bdc279eb62a37d8f9180b3c1ef74063fcfa9d3bdbb32703d5222ad53d046"
     },
     {
       "source": "debug-handler.bat",
       "target": "debug-handler.bat",
       "mode": "seed",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      "sha256": "572c17d891a05913c1f80fe5d5d47b3594bbee2d27a07d4004fa61456b2f8dfb"
     },
     {
       "source": "scripts/fetch-agents.ps1",
       "target": "scripts/fetch-agents.ps1",
       "mode": "managed",
-      "sha256": "2b5e20214f5ea93ad0ab43b203b4056bd72400e31464ea4c3fbd8d7f8d8c1141"
+      "sha256": "330d249c33c0a2c247d5251e8d313219bd9e38cf9b54c77233bd8fb8224b5014"
     },
     {
       "source": "docs-ai/common/rules.md",
       "target": "docs-ai/common/rules.md",
       "mode": "managed",
-      "sha256": "956f0fa894667800befd9a8f6563ca3262d431f95409ecf8a125aa0b20aa2e2c"
+      "sha256": "9acc3429ed0609bc4645f82e5beb403cd2ef6d8a9ff86ce7c4220a7a125ab41b"
     },
     {
       "source": "docs-ai/common/codedesign.md",
@@ -62,7 +62,7 @@
       "source": ".agents/skills/sync-agents-framework/SKILL.md",
       "target": ".agents/skills/sync-agents-framework/SKILL.md",
       "mode": "managed",
-      "sha256": "efd9f185058cf1976c1fe670cff3c17e3a6917954e43f3839097ba423f848f88"
+      "sha256": "75e852fce6d343cbe7bca84794e520c0757ce73204911581876c4a707135bf32"
     },
     {
       "source": ".agents/skills/sync-agents-framework/agents/openai.yaml",
@@ -80,7 +80,7 @@
       "source": "templates/1_architecture.md",
       "target": "docs-ai/current/1_architecture.md",
       "mode": "seed",
-      "sha256": "8f90df449ce46b2499f42e7befafdafacf2f1ce25b050f6df9bef0ebb399c8a2"
+      "sha256": "17cba8fdfbf1ee52b9a844899ce80112ef5edb6f8bcf8145d4888ca33c1cc0b1"
     },
     {
       "source": "templates/1_dependency.md",

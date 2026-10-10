@@ -47,6 +47,35 @@ function Quote-NativeArgument([string]$Value) {
     return $builder.ToString()
 }
 
+function Start-TestProcess([Diagnostics.Process]$Process) {
+    # .NET Framework initializes its stdin StreamWriter with Console.InputEncoding
+    # and AutoFlush during Process.Start, which can send a BOM before our writes.
+    # PowerShell 5.1 lacks ProcessStartInfo.StandardInputEncoding. Use a no-BOM
+    # console encoding only while creating the pipe, then restore it immediately.
+    $originalInputEncoding = [Console]::InputEncoding
+    try {
+        [Console]::InputEncoding = $utf8
+        [void]$Process.Start()
+    } finally { [Console]::InputEncoding = $originalInputEncoding }
+}
+
+function Write-TestProcessInput([Diagnostics.Process]$Process, [string]$Text) {
+    # Different console encodings can expose a preamble in the first selection.
+    # Write bytes to the pipe directly and never flush or close the writer.
+    $bytes = $utf8.GetBytes($Text)
+    $stream = $Process.StandardInput.BaseStream
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush()
+}
+
+function Close-TestProcessInput([Diagnostics.Process]$Process) {
+    $Process.StandardInput.BaseStream.Close()
+}
+
+function Write-InteractiveInput($Session, [string]$Value) {
+    Write-TestProcessInput $Session.Process ($Value + "`r`n")
+}
+
 function Invoke-Native([string]$Executable, [string[]]$Arguments, [string]$RawArguments = '', [hashtable]$Environment = @{}, [AllowNull()][string]$StandardInput = $null) {
     $start = New-Object System.Diagnostics.ProcessStartInfo
     $start.FileName = $Executable
@@ -62,11 +91,11 @@ function Invoke-Native([string]$Executable, [string[]]$Arguments, [string]$RawAr
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $start
     try {
-        [void]$process.Start()
+        Start-TestProcess $process
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
-        if ($null -ne $StandardInput) { $process.StandardInput.Write($StandardInput) }
-        $process.StandardInput.Close()
+        if ($null -ne $StandardInput) { Write-TestProcessInput $process $StandardInput }
+        Close-TestProcessInput $process
         $process.WaitForExit()
         return [pscustomobject]@{
             ExitCode = $process.ExitCode
@@ -204,10 +233,15 @@ function Invoke-InstalledBatch([string]$From, [string[]]$ExtraArguments) {
 function Get-TestBatchEnvironment([string]$Central, [hashtable]$ExtraEnvironment = @{}) {
     # Rewrite only the central clone URL, inside this child process and descendants.
     # Do not alter production BAT contents or any global/project Git configuration.
+    # Isolate concurrent PowerShell suites: cmd RANDOM can repeat across them.
+    $batchTemporaryDirectory = Join-Path $fixtureRoot 'batch-temp'
+    [void][IO.Directory]::CreateDirectory($batchTemporaryDirectory)
     $environment = @{
         GIT_CONFIG_COUNT = '1'
         GIT_CONFIG_KEY_0 = ('url.' + $Central.Replace([char]92, [char]47).TrimEnd('/') + '/.insteadOf')
         GIT_CONFIG_VALUE_0 = 'https://github.com/Evigila/AGENTS.md.git'
+        TEMP = $batchTemporaryDirectory
+        TMP = $batchTemporaryDirectory
     }
     if ($PSVersionTable.PSEdition -eq 'Desktop') {
         # The launcher normally prefers pwsh. In the Windows PowerShell suite,
@@ -247,7 +281,7 @@ function Start-InteractiveBatch([string]$BatchPath, [string[]]$Arguments = @(), 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $start
     try {
-        [void]$process.Start()
+        Start-TestProcess $process
         $session = [pscustomobject]@{
             Process = $process
             Text = New-Object System.Text.StringBuilder
@@ -296,8 +330,8 @@ function Assert-InteractiveWaiting($Session, [string]$Message) {
 }
 
 function Complete-InteractiveBatch($Session, [int]$Expected, [string]$Message) {
-    $Session.Process.StandardInput.WriteLine('')
-    $Session.Process.StandardInput.Close()
+    Write-InteractiveInput $Session ''
+    Close-TestProcessInput $Session.Process
     $timer = [Diagnostics.Stopwatch]::StartNew()
     do {
         [void](Read-InteractiveOutput $Session)
@@ -318,7 +352,7 @@ function Complete-InteractiveBatch($Session, [int]$Expected, [string]$Message) {
 function Close-InteractiveBatch($Session) {
     if ($null -ne $Session) {
         if (-not $Session.Process.HasExited) {
-            $Session.Process.StandardInput.Close()
+            Close-TestProcessInput $Session.Process
             if (-not $Session.Process.WaitForExit(5000)) { $Session.Process.Kill() }
         }
         $Session.Process.Dispose()
@@ -518,7 +552,7 @@ try {
             Assert-InteractiveWaiting $interactive 'Menu must wait for a selection before acquiring the framework.'
             Assert-Snapshot $interactiveSnapshot $interactiveProject 'Menu changed the project before input'
             Assert-True (-not [IO.File]::Exists($gitTrace)) 'Menu invoked Git before the user selected an operation.'
-            $interactive.Process.StandardInput.WriteLine('2')
+            Write-InteractiveInput $interactive ('2')
             [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Check did not present the completion prompt.')
             Assert-InteractiveWaiting $interactive 'Check must wait at completion before closing the console.'
             Assert-Snapshot $interactiveSnapshot $interactiveProject 'Menu Check wrote to the project'
@@ -532,7 +566,7 @@ try {
         try {
             $interactive = Start-InteractiveBatch $interactiveBatch
             [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'Default Update did not present its menu.')
-            $interactive.Process.StandardInput.WriteLine('')
+            Write-InteractiveInput $interactive ('')
             [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Default Update did not present its completion prompt.')
             Assert-InteractiveWaiting $interactive 'Default Update must wait at completion.'
             Assert-Equal '1.0.1' (Read-TestJson $interactiveLockPath).frameworkVersion 'Empty Enter did not select Update.'
@@ -549,7 +583,7 @@ try {
         try {
             $interactive = Start-InteractiveBatch $interactiveBatch
             [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'Conflicting Check did not present its menu.')
-            $interactive.Process.StandardInput.WriteLine('2')
+            Write-InteractiveInput $interactive ('2')
             [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Conflicting Check did not wait at completion.')
             Assert-InteractiveWaiting $interactive 'Conflicting Check must wait at completion.'
             Assert-Snapshot $interactiveSnapshot $interactiveProject 'Conflicting menu Check changed the project'
@@ -562,7 +596,7 @@ try {
         try {
             $interactive = Start-InteractiveBatch $interactiveBatch
             [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'Force did not present its menu.')
-            $interactive.Process.StandardInput.WriteLine('3')
+            Write-InteractiveInput $interactive ('3')
             [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Force did not wait at completion.')
             Assert-InteractiveWaiting $interactive 'Force must wait at completion.'
             [void](Complete-InteractiveBatch $interactive 0 'Force menu selection completes successfully.')
@@ -583,7 +617,7 @@ try {
             Assert-InteractiveWaiting $interactive 'Explicit options must wait for confirmation.'
             Assert-Snapshot $interactiveSnapshot $interactiveProject 'Explicit options changed the project before confirmation'
             Assert-True (-not [IO.File]::Exists($confirmationTrace)) 'Explicit options invoked Git before confirmation.'
-            $interactive.Process.StandardInput.WriteLine('')
+            Write-InteractiveInput $interactive ('')
             [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Confirmed Check did not wait at completion.')
             Assert-InteractiveWaiting $interactive 'Confirmed Check must wait at completion.'
             Assert-Snapshot $interactiveSnapshot $interactiveProject 'Confirmed explicit Check changed the project'
@@ -592,21 +626,24 @@ try {
             Write-Host 'PASS: Explicit CLI options require Enter before acquisition; a later NonInteractive switch does not bypass either wait.'
         } finally { Close-InteractiveBatch $interactive }
 
-        # Only the disposable consumer contains these invalid images. The BAT
-        # resolves its real shell before pushd; confirmation then fails in the
-        # consumer, and popd restores the real shell for the completion prompt.
-        # This exercises shell startup failure without replacing an installed
-        # executable, changing production BAT text, or adding a test dependency.
-        $confirmationFailureImages = @(
-            (Join-Path $interactiveProject 'pwsh.exe')
-            (Join-Path $interactiveProject 'powershell.exe')
-        )
-        foreach ($imagePath in $confirmationFailureImages) { Write-TestBytes $imagePath ([byte[]]@()) }
+        # Inject a deterministic failed command into a disposable BAT copy.
+        # Keep the real confirmation-result handling and completion wait.
+        # Invalid executable images can open blocking Windows error dialogs
+        # on hosted runners, so do not rely on OS startup-failure simulation.
+        $confirmationFailureBatch = Join-Path $interactiveProject 'scripts/confirmation-failure-fixture.bat'
+        $confirmationFailureLines = @([IO.File]::ReadAllText($interactiveBatch, $utf8).Replace("`r`n", "`n") -split "`n")
+        $confirmationInvocationIndices = @(for ($lineIndex = 0; $lineIndex -lt $confirmationFailureLines.Count; $lineIndex++) {
+            if ($confirmationFailureLines[$lineIndex].StartsWith('"%AGENTS_SHELL%" -NoProfile -Command ') -and
+                $confirmationFailureLines[$lineIndex].Contains('Press Enter to run the supplied options')) { $lineIndex }
+        })
+        Assert-Equal 1 $confirmationInvocationIndices.Count 'The confirmation fault fixture must replace exactly one PowerShell invocation.'
+        $confirmationFailureLines[$confirmationInvocationIndices[0]] = '"%ComSpec%" /d /c exit 1'
+        Write-TestText $confirmationFailureBatch ($confirmationFailureLines -join "`r`n")
         $confirmationFailureSnapshot = Get-ProjectSnapshot $interactiveProject
         $confirmationFailureTrace = Join-Path $fixtureRoot 'interactive-confirmation-failure.git-trace'
         $interactive = $null
         try {
-            $interactive = Start-InteractiveBatch $interactiveBatch @('-Check') @{ GIT_TRACE = $confirmationFailureTrace }
+            $interactive = Start-InteractiveBatch $confirmationFailureBatch @('-Check') @{ GIT_TRACE = $confirmationFailureTrace }
             [void](Wait-InteractiveOutput $interactive 'Cannot read the supplied-options confirmation\.' 'Shell confirmation failure was mistaken for authorization.')
             [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Confirmation failure did not wait at completion.')
             Assert-InteractiveWaiting $interactive 'Confirmation failure must keep the completion console open.'
@@ -614,10 +651,10 @@ try {
             Assert-True (-not [IO.File]::Exists($confirmationFailureTrace)) 'Confirmation shell failure invoked Git.'
             [void](Complete-InteractiveBatch $interactive 1 'Confirmation shell failure returns failure after completion input.')
             $testCount++
-            Write-Host 'PASS: A local test-only shell startup failure cannot authorize Update and still waits before returning failure.'
+            Write-Host 'PASS: A test-only confirmation command failure cannot authorize Update and still waits before returning failure.'
         } finally {
             Close-InteractiveBatch $interactive
-            foreach ($imagePath in $confirmationFailureImages) { [IO.File]::Delete($imagePath) }
+            [IO.File]::Delete($confirmationFailureBatch)
         }
 
         $invalidTrace = Join-Path $fixtureRoot 'interactive-invalid-selection.git-trace'
@@ -625,12 +662,12 @@ try {
         try {
             $interactive = Start-InteractiveBatch $interactiveBatch @() @{ GIT_TRACE = $invalidTrace }
             [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'Invalid-input check did not present its menu.')
-            $interactive.Process.StandardInput.WriteLine('invalid')
+            Write-InteractiveInput $interactive ('invalid')
             [void](Wait-InteractiveOutput $interactive 'Invalid selection\.' 'Invalid input did not return to the menu.')
             Assert-InteractiveWaiting $interactive 'Invalid menu input must not authorize an operation.'
             Assert-Snapshot $interactiveSnapshot $interactiveProject 'Invalid menu input changed the project'
             Assert-True (-not [IO.File]::Exists($invalidTrace)) 'Invalid menu input invoked Git.'
-            $interactive.Process.StandardInput.Close()
+            Close-TestProcessInput $interactive.Process
             Assert-True ($interactive.Process.WaitForExit(30000)) 'EOF after invalid menu input did not cancel promptly.'
             Assert-Exit ([pscustomobject]@{ ExitCode = $interactive.Process.ExitCode; Output = Read-InteractiveOutput $interactive }) 0 'EOF cancels instead of selecting the default update.'
             Assert-Snapshot $interactiveSnapshot $interactiveProject 'EOF cancellation changed the project'
@@ -644,7 +681,7 @@ try {
         try {
             $interactive = Start-InteractiveBatch $interactiveBatch @() @{ GIT_TRACE = $cancelTrace }
             [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'Cancellation check did not present its menu.')
-            $interactive.Process.StandardInput.WriteLine('0')
+            Write-InteractiveInput $interactive ('0')
             [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Cancelled Update did not wait before closing.')
             Assert-InteractiveWaiting $interactive 'A cancelled Update must retain the console until completion input.'
             Assert-Snapshot $interactiveSnapshot $interactiveProject 'Cancelled Update changed the project'
@@ -666,7 +703,7 @@ try {
             Assert-InteractiveWaiting $interactive 'Debug entry must wait for a selection.'
             Assert-True (-not [IO.File]::Exists($debugMarker)) 'Debug operation started before menu input.'
             Assert-Snapshot $interactiveSnapshot $interactiveProject 'Debug entry changed the project before selection'
-            $interactive.Process.StandardInput.WriteLine('')
+            Write-InteractiveInput $interactive ('')
             [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Default Debug did not wait at completion.')
             Assert-InteractiveWaiting $interactive 'Default Debug must wait at completion.'
             Assert-True ([IO.File]::Exists($debugMarker)) 'Empty Enter did not dispatch the configured Debug operation.'
@@ -680,7 +717,7 @@ try {
         try {
             $interactive = Start-InteractiveBatch $debugBatch
             [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'Unconfigured operation did not present its menu.')
-            $interactive.Process.StandardInput.WriteLine('2')
+            Write-InteractiveInput $interactive ('2')
             [void](Wait-InteractiveOutput $interactive 'Operation is not configured: scripts/clear-database' 'Missing operation did not explain its missing script.')
             [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Missing operation did not wait at completion.')
             Assert-InteractiveWaiting $interactive 'Missing operation must wait before returning its failure.'
@@ -698,7 +735,7 @@ try {
         try {
             $interactive = Start-InteractiveBatch $debugBatch
             [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'Failing Debug did not present its menu.')
-            $interactive.Process.StandardInput.WriteLine('1')
+            Write-InteractiveInput $interactive ('1')
             [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Child BAT exit closed the entry without completion input.')
             Assert-InteractiveWaiting $interactive 'Child BAT exit must leave the parent waiting at completion.'
             [void](Complete-InteractiveBatch $interactive 37 'The entry preserves a child BAT exit code of 37.')
@@ -717,7 +754,7 @@ try {
             $interactive = Start-InteractiveBatch $debugBatch
             [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'PowerShell fallback did not present its menu.')
             Assert-True (-not [IO.File]::Exists($clearMarker)) 'PowerShell operation executed before selection.'
-            $interactive.Process.StandardInput.WriteLine('2')
+            Write-InteractiveInput $interactive ('2')
             [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'PowerShell fallback did not wait at completion.')
             Assert-InteractiveWaiting $interactive 'A failed PowerShell operation must wait before closing.'
             Assert-Equal 'PowerShell fallback executed' ([IO.File]::ReadAllText($clearMarker)) 'A missing operation BAT did not fall back to its PS1.'
@@ -735,7 +772,7 @@ try {
         try {
             $interactive = Start-InteractiveBatch $debugBatch
             [void](Wait-InteractiveOutput $interactive 'Select \[1\]:' 'Debug cancellation did not present its menu.')
-            $interactive.Process.StandardInput.WriteLine('0')
+            Write-InteractiveInput $interactive ('0')
             [void](Wait-InteractiveOutput $interactive 'Press Enter to close\.\.\.' 'Cancelled Debug did not wait at completion.')
             Assert-InteractiveWaiting $interactive 'A cancelled Debug must wait before closing.'
             [void](Complete-InteractiveBatch $interactive 0 'Debug cancellation retains exit code 0 after completion input.')

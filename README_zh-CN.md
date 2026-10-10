@@ -12,7 +12,7 @@
 - 需要Git for Windows
 - 需要Windows PowerShell 5.1 或者 7
 
-使用以下命令快速获取 fetch-agents.bat，这是本仓库的“快捷处理器”。确保你的仓库没有该bat，否则你需要将其移除。
+首次安装时，使用以下命令获取 `fetch-agents.bat`。
 
 ```bat
 cmd /c "curl.exe -fL https://raw.githubusercontent.com/Evigila/AGENTS.md/main/fetch-agents.bat -o fetch-agents.bat && call fetch-agents.bat"
@@ -41,11 +41,9 @@ fetch-agents.bat -Check
 | `docs-ai/current/1_archived/` | 已被废弃的档案 |
 | `docs/` | 你应当人工维护的文档，面向人类 |
 | `fetch-agents.bat`, `scripts/fetch-agents.ps1` | 快捷处理器，快速检查和同步 |
-| `scripts/` | 项目操作脚本和框架同步实现 |
-| `debug-handler.bat` | 初始为空的项目操作统一入口，仅在文件不存在时创建 |
+| `scripts/` | AI 创建的脚本应放在这里， 根目录只允许 `debug-handler.bat` 和 `fetch-agents.bat`。 |
+| `debug-handler.bat` | 项目操作统一入口，初始为空 |
 | `templates/`, publisher, tests, CI, README | 不会被复制到你的仓库 |
-
-AI 创建的项目脚本应放在 `scripts/` 下；根目录只允许创建 `debug-handler.bat` 和 `fetch-agents.bat`。调试启动项目、清除数据库、发布远端 Git Tag、发布 NuGet 等操作必须统一通过 `debug-handler.bat` 入口，可由它调用 `scripts/` 下的独立脚本。该入口属于当前项目，框架同步会保留已有内容，包括使用 `-Force` 时。
 
 ## 使用命令
 
@@ -90,18 +88,6 @@ AI 创建的项目脚本应放在 `scripts/` 下；根目录只允许创建 `deb
 ```
 .\fetch-agents.bat -Repository "仓库Git地址" -Ref main
 ```
-
-## 旧版同步器恢复
-
-旧版同步器可能因不认识新版本新增的模板而报 `Invalid project template target`。请使用当前中央仓库中的同步器检查目标项目，并保留目标项目原有的锁文件和已安装文件：
-
-```powershell
-& 'C:\中央仓库路径\AGENTS.md\scripts\fetch-agents.ps1' -ProjectRoot 'C:\目标项目路径' -Check
-```
-
-确认需要更新后，使用同一命令去掉 `-Check`。不要手动覆盖项目中的同步器或删除锁文件，正常同步需要继续检查本地冲突并保护项目文件。
-
-新版清单声明同步器协议 `1`。兼容的同步器会先固定源提交，校验并在临时目录运行该提交中的同步器，再解析新增的模板路径；锁文件仍保留原仓库和分支或版本引用，`-Check` 不修改项目文件。没有协议字段的旧版清单继续由当前同步器处理，包含主动回退的场景。
 
 ## 排除
 

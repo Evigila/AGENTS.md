@@ -12,9 +12,7 @@ Requirements:
 - Git for Windows
 - Windows PowerShell 5.1 or PowerShell 7
 
-Use the following command to download `fetch-agents.bat`, the quick launcher for this repository. 
-
-Make sure the target repository does **NOT** already contain a file with this name; if it does, remove the existing file first.
+For a first installation, use the following command to download `fetch-agents.bat`. 
 
 ```bat
 cmd /c "curl.exe -fL https://raw.githubusercontent.com/Evigila/AGENTS.md/main/fetch-agents.bat -o fetch-agents.bat && call fetch-agents.bat"
@@ -43,11 +41,9 @@ fetch-agents.bat -Check
 | `docs-ai/current/1_archived/` | Archived and obsolete |
 | `docs/` | You should maintain manually **HUMAN** |
 | `fetch-agents.bat`, `scripts/fetch-agents.ps1` | Quick launcher for checking and synchronizing |
-| `scripts/` | Project operation scripts and the synchronization implementation |
-| `debug-handler.bat` | Initially empty, unified entry point for project operations; created only when missing |
+| `scripts/` | AI-created scripts is under `here`, only `debug-handler.bat` and `fetch-agents.bat` are allowed at the root. |
+| `debug-handler.bat` | Unified entry point for project operations, initially empty, |
 | `templates/`, publisher, tests, CI, README | Will **NOT** copied into your repository |
-
-AI-created scripts belong under `scripts/`; only `debug-handler.bat` and `fetch-agents.bat` may be created at the root. Starting the project for debugging, clearing databases, publishing remote Git tags, and publishing NuGet packages must use `debug-handler.bat`, which may call separate scripts under `scripts/`. Framework synchronization preserves any existing content in this project-owned entry point, including with `-Force`.
 
 ## Commands
 
@@ -92,18 +88,6 @@ AI-created scripts belong under `scripts/`; only `debug-handler.bat` and `fetch-
 ```
 .\fetch-agents.bat -Repository "Git repository URL" -Ref main
 ```
-
-## Recovering a legacy installer
-
-An older installed script may report `Invalid project template target` when a new release adds a template it does not recognize. From a current central checkout, run its installer against the consumer repository while keeping the consumer's lock and installed files intact:
-
-```powershell
-& 'C:\path\to\AGENTS.md\scripts\fetch-agents.ps1' -ProjectRoot 'C:\path\to\consumer' -Check
-```
-
-For an authorized update, run the same command without `-Check`. Do not overwrite the consumer installer by hand or delete its lock; normal synchronization must retain conflict detection and project-file protection.
-
-New releases declare installer protocol `1`. Compatible installed scripts verify and temporarily run the installer from the selected source commit before interpreting new payload paths. The original repository/ref remains in the lock, and `-Check` leaves all consumer files unchanged. Legacy manifests without that protocol continue through the running script, including intentional rollback.
 
 ## Exclusions
 

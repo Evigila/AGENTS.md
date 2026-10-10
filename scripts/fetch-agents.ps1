@@ -1,7 +1,7 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
+    [string]$ProjectRoot = $(if ($env:AGENTS_PROJECT_ROOT) { $env:AGENTS_PROJECT_ROOT } else { Split-Path -Parent $PSScriptRoot }),
     [string]$Repository,
     [string]$Ref,
     [string]$SourcePath,
@@ -200,6 +200,22 @@ try {
     }
     if ([string]::IsNullOrWhiteSpace($Ref)) { $Ref = if ($installed) { [string]$installed.ref } else { 'main' } }
     if ($Repository.StartsWith('-') -or $Ref.StartsWith('-')) { throw 'Repository and Ref must not be Git command options.' }
+    $launcher = $null
+    if ($env:AGENTS_BOOTSTRAP_SOURCE) {
+        $bootstrapSource = [IO.Path]::GetFullPath($env:AGENTS_BOOTSTRAP_SOURCE)
+        $bootstrapCommit = Invoke-GitText @('-C', $bootstrapSource, 'rev-parse', 'HEAD^{commit}')
+        $bootstrapTree = Invoke-GitText @('-C', $bootstrapSource, 'ls-tree', $bootstrapCommit, '--', 'fetch-agents.bat')
+        if ($bootstrapTree -notmatch '^(100644|100755) blob [0-9a-f]{40}\t') { throw 'Bootstrap launcher is not a regular Git file.' }
+        $bootstrapManifest = Read-Json (Invoke-GitBytes @('-C', $bootstrapSource, 'show', ($bootstrapCommit + ':AGENTS.framework.json')))
+        $launcherEntries = @($bootstrapManifest.files | Where-Object { $_.target -eq 'fetch-agents.bat' })
+        if ($bootstrapManifest.schemaVersion -ne 1 -or -not $bootstrapManifest.PSObject.Properties['launcherProtocolVersion'] -or
+            $bootstrapManifest.launcherProtocolVersion -ne 1 -or $launcherEntries.Count -ne 1 -or
+            $launcherEntries[0].source -ne 'fetch-agents.bat' -or $launcherEntries[0].mode -ne 'managed' -or
+            $launcherEntries[0].sha256 -notmatch '^[0-9a-f]{64}$') { throw 'Invalid bootstrap launcher entry.' }
+        $launcherBytes = Invoke-GitBytes @('-C', $bootstrapSource, 'show', ($bootstrapCommit + ':fetch-agents.bat'))
+        if ((Get-ContentHash $launcherBytes) -ne $launcherEntries[0].sha256) { throw 'Bootstrap launcher hash mismatch.' }
+        $launcher = [pscustomobject]@{ bytes = $launcherBytes; hash = $launcherEntries[0].sha256; commit = $bootstrapCommit }
+    }
     if ($ResolvedCommit -and (-not $SourcePath -or $ResolvedCommit -notmatch '^[0-9a-f]{40}$')) {
         throw 'ResolvedCommit requires SourcePath and one full Git commit SHA.'
     }
@@ -227,14 +243,15 @@ try {
         throw 'Framework content changed without a version increment. Publish a new version first.'
     }
     if ($manifest.PSObject.Properties['installerProtocolVersion']) {
-        if ($manifest.installerProtocolVersion -ne 1) { throw 'Unsupported installer bootstrap protocol.' }
+        if ($manifest.installerProtocolVersion -notin @(1, 2)) { throw 'Unsupported installer bootstrap protocol.' }
         $installerEntries = @($manifest.files | Where-Object { $_.target -eq 'scripts/fetch-agents.ps1' })
         if ($installerEntries.Count -ne 1 -or $installerEntries[0].mode -ne 'managed' -or
             $installerEntries[0].sha256 -notmatch '^[0-9a-f]{64}$') { throw 'Invalid source installer entry.' }
         $installerEntry = $installerEntries[0]
         $installerBytes = Read-SourceFile ([string]$installerEntry.source)
         if ((Get-ContentHash $installerBytes) -ne $installerEntry.sha256) { throw 'Source installer payload hash mismatch.' }
-        if ((Get-ContentHash ([IO.File]::ReadAllBytes($PSCommandPath))) -ne $installerEntry.sha256) {
+        if ((-not $launcher -or $manifest.installerProtocolVersion -eq 2) -and
+            (Get-ContentHash ([IO.File]::ReadAllBytes($PSCommandPath))) -ne $installerEntry.sha256) {
             $installerDirectory = Join-Path ([IO.Path]::GetTempPath()) ('agents-installer-' + [Guid]::NewGuid().ToString('N'))
             if (Test-Path -LiteralPath $installerDirectory) { throw 'Temporary installer directory already exists.' }
             $temporaryInstaller = $installerDirectory
@@ -272,6 +289,10 @@ try {
     }
     foreach ($required in @('AGENTS.md', 'fetch-agents.bat', 'scripts/fetch-agents.ps1', 'docs-ai/common/rules.md', 'docs-ai/common/codedesign.md', 'docs-ai/common/UIUX.md')) {
         if (-not $managedHashes.Contains($required)) { throw "Required managed file is missing: $required" }
+    }
+    if ($launcher) {
+        $desired['fetch-agents.bat'] = [pscustomobject]@{ mode = 'managed'; bytes = $launcher.bytes; hash = $launcher.hash }
+        $managedHashes['fetch-agents.bat'] = $launcher.hash
     }
     $desired['AGENTS.framework.json'] = [pscustomobject]@{ mode = 'managed'; bytes = $manifestBytes; hash = $manifestHash }
     $managedHashes['AGENTS.framework.json'] = $manifestHash
@@ -319,6 +340,12 @@ try {
             schemaVersion = 1; repository = $Repository; ref = $Ref; commit = $commit
             frameworkVersion = $manifest.frameworkVersion; manifestSha256 = $manifestHash
             managedFiles = $managedHashes; synchronizedAtUtc = [DateTime]::UtcNow.ToString('o')
+        }
+        if ($launcher) {
+            $nextLock['launcher'] = [ordered]@{
+                repository = 'https://github.com/Evigila/AGENTS.md.git'; ref = 'main'
+                commit = $launcher.commit; sha256 = $launcher.hash
+            }
         }
         $lockBytes = $utf8.GetBytes(($nextLock | ConvertTo-Json -Depth 20) + "`n")
         $operations.Add([pscustomobject]@{ relative = 'AGENTS.lock.json'; path = $lockPath; bytes = $lockBytes; delete = $false })

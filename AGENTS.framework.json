@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "installerProtocolVersion": 1,
-  "frameworkVersion": "1.1.1",
+  "installerProtocolVersion": 2,
+  "frameworkVersion": "1.2.0",
   "repository": "Evigila/AGENTS.md",
   "files": [
     {
@@ -14,7 +14,7 @@
       "source": "fetch-agents.bat",
       "target": "fetch-agents.bat",
       "mode": "managed",
-      "sha256": "6ca9ae52e96f275b1d93e14abc928c32b583a4b6ded4679719a7311766eacb08"
+      "sha256": "324ee031851b3e52cc7651b462753a067bc4ae41aa18f4b879f18d6d87a20fe9"
     },
     {
       "source": "debug-handler.bat",
@@ -26,13 +26,13 @@
       "source": "scripts/fetch-agents.ps1",
       "target": "scripts/fetch-agents.ps1",
       "mode": "managed",
-      "sha256": "be0f72d8dce1433a5c90ab32ac98c912f8101204709825c364e630fab6cbb333"
+      "sha256": "2b5e20214f5ea93ad0ab43b203b4056bd72400e31464ea4c3fbd8d7f8d8c1141"
     },
     {
       "source": "docs-ai/common/rules.md",
       "target": "docs-ai/common/rules.md",
       "mode": "managed",
-      "sha256": "dd970e2f84b3ce7b81fad21f53e47dae3c7a3d645400b6b50edc7643c206c9cc"
+      "sha256": "956f0fa894667800befd9a8f6563ca3262d431f95409ecf8a125aa0b20aa2e2c"
     },
     {
       "source": "docs-ai/common/codedesign.md",
@@ -62,7 +62,7 @@
       "source": ".agents/skills/sync-agents-framework/SKILL.md",
       "target": ".agents/skills/sync-agents-framework/SKILL.md",
       "mode": "managed",
-      "sha256": "c54cfe2450db3a3e1dca4e2b943939c38818312b8241ecf41d433409f2a6fe30"
+      "sha256": "efd9f185058cf1976c1fe670cff3c17e3a6917954e43f3839097ba423f848f88"
     },
     {
       "source": ".agents/skills/sync-agents-framework/agents/openai.yaml",
@@ -112,5 +112,6 @@
       "mode": "seed",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     }
-  ]
+  ],
+  "launcherProtocolVersion": 1
 }

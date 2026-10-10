@@ -17,6 +17,7 @@ $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('agents-sync-tests-' + [Gui
 $testCount = 0
 $skipCount = 0
 $successful = $false
+$centralSource = $null
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -46,7 +47,7 @@ function Quote-NativeArgument([string]$Value) {
     return $builder.ToString()
 }
 
-function Invoke-Native([string]$Executable, [string[]]$Arguments, [string]$RawArguments = '') {
+function Invoke-Native([string]$Executable, [string[]]$Arguments, [string]$RawArguments = '', [hashtable]$Environment = @{}) {
     $start = New-Object System.Diagnostics.ProcessStartInfo
     $start.FileName = $Executable
     $start.Arguments = if ($RawArguments) { $RawArguments }
@@ -56,6 +57,7 @@ function Invoke-Native([string]$Executable, [string[]]$Arguments, [string]$RawAr
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
     $start.EnvironmentVariables['GIT_TERMINAL_PROMPT'] = '0'
+    foreach ($key in $Environment.Keys) { $start.EnvironmentVariables[$key] = [string]$Environment[$key] }
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $start
     try {
@@ -193,8 +195,27 @@ function Invoke-Sync([string]$From, [string[]]$ExtraArguments) {
 function Invoke-InstalledBatch([string]$From, [string[]]$ExtraArguments) {
     $batchPath = Join-Path $project 'fetch-agents.bat'
     $batchArguments = @('-SourcePath', $From, '-Repository', $source, '-Ref', 'main') + $ExtraArguments
-    $command = (Quote-NativeArgument $batchPath) + ' ' + (($batchArguments | ForEach-Object { Quote-NativeArgument $_ }) -join ' ')
-    return Invoke-Native $env:ComSpec @() ('/d /s /c "' + $command + '"')
+    return Invoke-TestBatch $batchPath $batchArguments
+}
+
+function Invoke-TestBatch([string]$BatchPath, [string[]]$Arguments, [string]$Central = $centralSource, [hashtable]$ExtraEnvironment = @{}) {
+    # Rewrite only the central clone URL, inside this child process and descendants.
+    # Do not alter production BAT contents or any global/project Git configuration.
+    $environment = @{
+        GIT_CONFIG_COUNT = '1'
+        GIT_CONFIG_KEY_0 = ('url.' + $Central.Replace([char]92, [char]47).TrimEnd('/') + '/.insteadOf')
+        GIT_CONFIG_VALUE_0 = 'https://github.com/Evigila/AGENTS.md.git'
+    }
+    if ($PSVersionTable.PSEdition -eq 'Desktop') {
+        # The launcher normally prefers pwsh. In the Windows PowerShell suite,
+        # narrow only this child's PATH so the real BAT exercises its 5.1 fallback.
+        $gitCommand = @(Get-Command git.exe -CommandType Application -ErrorAction Stop)[0]
+        $gitDirectory = [IO.Path]::GetDirectoryName($gitCommand.Source)
+        $environment['PATH'] = @($PSHOME, $gitDirectory, (Join-Path $env:SystemRoot 'System32'), $env:SystemRoot) -join [IO.Path]::PathSeparator
+    }
+    foreach ($key in $ExtraEnvironment.Keys) { $environment[$key] = [string]$ExtraEnvironment[$key] }
+    $command = (Quote-NativeArgument $BatchPath) + ' ' + (($Arguments | ForEach-Object { Quote-NativeArgument $_ }) -join ' ')
+    return Invoke-Native $env:ComSpec @() ('/d /s /c "' + $command + '"') $environment
 }
 
 function Assert-Exit($Result, [int]$Expected, [string]$Message, [string]$OutputPattern = '') {
@@ -224,8 +245,7 @@ function Invoke-ProjectEntry([string]$Target, [string]$From, [string]$Repository
     $arguments = @('-SourcePath', $From, '-Repository', $Repository, '-Ref', $Ref) + $ExtraArguments
     if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
         $batchPath = Join-Path $Target 'fetch-agents.bat'
-        $command = (Quote-NativeArgument $batchPath) + ' ' + (($arguments | ForEach-Object { Quote-NativeArgument $_ }) -join ' ')
-        return Invoke-Native $env:ComSpec @() ('/d /s /c "' + $command + '"')
+        return Invoke-TestBatch $batchPath $arguments
     }
     return Invoke-TestScript (Join-Path $Target 'scripts/fetch-agents.ps1') (@('-ProjectRoot', $Target) + $arguments)
 }
@@ -242,10 +262,18 @@ function Assert-ProjectEntryReadOnly([string]$Target, [string]$From, [string]$Re
     Write-Host "PASS: $Message"
 }
 
+function Invoke-CentralEntry([string[]]$Arguments) {
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        return Invoke-TestBatch (Join-Path $centralSource 'fetch-agents.bat') $Arguments
+    }
+    return Invoke-TestScript (Join-Path $centralSource 'scripts/fetch-agents.ps1') $Arguments
+}
+
 try {
     Assert-True ([IO.File]::Exists((Join-Path $repositoryRoot 'AGENTS.framework.json'))) 'Publish AGENTS.framework.json before running the tests.'
     [void][IO.Directory]::CreateDirectory($fixtureRoot)
     $source = Join-Path $fixtureRoot 'framework source'
+    $centralSource = $source
     $project = Join-Path $fixtureRoot 'target project'
     Initialize-TestRepository $source
     $originalManifest = Read-TestJson (Join-Path $repositoryRoot 'AGENTS.framework.json')
@@ -501,20 +529,79 @@ try {
     [void](Invoke-TestGit @('-C', $recoverySource, 'branch', $compatibilityRef))
     Assert-ProjectEntryReadOnly $legacyProject $recoverySource $recoverySource $compatibilityRef @('-Check') 1 'Real old consumer Check reproduces the unsupported project template failure.' 'Invalid project template target'
     Assert-ProjectEntryReadOnly $legacyProject $recoverySource $recoverySource $compatibilityRef @() 1 'Real old consumer update fails before changing project files.' 'Invalid project template target'
+    $centralSource = $recoverySource
     $recoveryArguments = @('-ProjectRoot', $legacyProject, '-SourcePath', $recoverySource, '-Repository', $recoverySource, '-Ref', $compatibilityRef)
     $legacySnapshot = Get-ProjectSnapshot $legacyProject
-    Assert-Exit (Invoke-TestScript $installer ($recoveryArguments + @('-Check'))) 2 'Central current installer can check the real old consumer for recovery.'
+    $legacyLockTime = [IO.File]::GetLastWriteTimeUtc((Join-Path $legacyProject 'AGENTS.lock.json')).Ticks
+    Assert-Exit (Invoke-CentralEntry ($recoveryArguments + @('-Check'))) 2 'Current central entry checks the real old consumer without running its local interpreter.'
     Assert-Snapshot $legacySnapshot $legacyProject 'Central recovery Check wrote to the historical consumer'
-    Assert-Exit (Invoke-TestScript $installer $recoveryArguments) 0 'Central current installer recovers the real old consumer without Force.'
+    Assert-Equal $legacyLockTime ([IO.File]::GetLastWriteTimeUtc((Join-Path $legacyProject 'AGENTS.lock.json')).Ticks) 'Central recovery Check rewrote the historical lock.'
+    Assert-Exit (Invoke-CentralEntry $recoveryArguments) 0 'Current central entry recovers the real old consumer without manually replacing its files.'
     $recoveryLock = Read-TestJson (Join-Path $legacyProject 'AGENTS.lock.json')
     Assert-Equal '1.1.0' $recoveryLock.frameworkVersion 'Recovery must record the installed release.'
     Assert-Equal $recoveryCommit $recoveryLock.commit 'Recovery must record the resolved source commit.'
     Assert-Equal $compatibilityRef $recoveryLock.ref 'Recovery must retain the requested non-default ref.'
+    if ($windows) {
+        Assert-Equal 'https://github.com/Evigila/AGENTS.md.git' $recoveryLock.launcher.repository 'Recovery records the fixed central launcher repository.'
+        Assert-Equal 'main' $recoveryLock.launcher.ref 'Recovery records the central main launcher ref separately from the payload ref.'
+        Assert-Equal $recoveryCommit $recoveryLock.launcher.commit 'Recovery records the actual central launcher commit.'
+        Assert-Equal (Get-TestHash ([IO.File]::ReadAllBytes((Join-Path $centralSource 'fetch-agents.bat')))) $recoveryLock.launcher.sha256 'Recovery records the actual central BAT hash.'
+    }
     foreach ($relative in $legacyOwnedFiles.Keys) {
         Assert-Equal $legacyOwnedFiles[$relative] (Get-TestBytes (Join-Path $legacyProject $relative)) "Recovery replaced project-owned content: $relative"
     }
     $testCount++
-    Write-Host 'PASS: The central installer recovers a real historical consumer while retaining its project files and requested ref.'
+    Write-Host 'PASS: The current central entry recovers a real historical consumer while retaining its project files and requested ref.'
+
+    if ($windows) {
+        $localInterpreterPath = Join-Path $legacyProject 'scripts/fetch-agents.ps1'
+        $recoveredInterpreterBytes = [IO.File]::ReadAllBytes($localInterpreterPath)
+        Write-TestBytes $localInterpreterPath ([IO.File]::ReadAllBytes($legacyInstaller))
+        Assert-ProjectEntryReadOnly $legacyProject $recoverySource $recoverySource $compatibilityRef @('-Check') 3 'Current consumer BAT ignores the old local interpreter and reports its managed conflict.' 'Local conflicts'
+        [IO.File]::Delete($localInterpreterPath)
+        Assert-ProjectEntryReadOnly $legacyProject $recoverySource $recoverySource $compatibilityRef @('-Check') 3 'Current consumer BAT checks a missing local interpreter without restoring or executing it.' 'Local conflicts'
+        $localExecutionMarker = Join-Path $fixtureRoot 'local-interpreter-executed.txt'
+        Write-TestText $localInterpreterPath ("[IO.File]::WriteAllText('" + $localExecutionMarker.Replace("'", "''") + "', 'Executed local interpreter')`nexit 77`n")
+        Assert-ProjectEntryReadOnly $legacyProject $recoverySource $recoverySource $compatibilityRef @('-Check') 3 'Current consumer BAT ignores a customized executable local interpreter.' 'Local conflicts'
+        Assert-True (-not [IO.File]::Exists($localExecutionMarker)) 'The current BAT executed a project-local interpreter.'
+        $cloneFailureSnapshot = Get-ProjectSnapshot $legacyProject
+        $cloneFailureLockTime = [IO.File]::GetLastWriteTimeUtc((Join-Path $legacyProject 'AGENTS.lock.json')).Ticks
+        $missingCentralSource = Join-Path $fixtureRoot 'central repository does not exist'
+        $cloneFailureArguments = @('-SourcePath', $recoverySource, '-Repository', $recoverySource, '-Ref', $compatibilityRef, '-Check')
+        Assert-Exit (Invoke-TestBatch (Join-Path $legacyProject 'fetch-agents.bat') $cloneFailureArguments $missingCentralSource) 1 'Central clone failure stops instead of falling back to the local interpreter.'
+        Assert-Snapshot $cloneFailureSnapshot $legacyProject 'Central clone failure wrote to the consumer'
+        Assert-Equal $cloneFailureLockTime ([IO.File]::GetLastWriteTimeUtc((Join-Path $legacyProject 'AGENTS.lock.json')).Ticks) 'Central clone failure rewrote the lock.'
+        Assert-True (-not [IO.File]::Exists($localExecutionMarker)) 'Central clone failure executed the local interpreter fallback.'
+        $oldCentralSnapshot = Get-ProjectSnapshot $legacyProject
+        $oldCentralLockTime = [IO.File]::GetLastWriteTimeUtc((Join-Path $legacyProject 'AGENTS.lock.json')).Ticks
+        Assert-Exit (Invoke-TestBatch (Join-Path $legacyProject 'fetch-agents.bat') $cloneFailureArguments $legacySource) 1 'Current BAT refuses a central controller without the supported launcher contract before executing it.' 'Unsupported central launcher protocol'
+        Assert-Snapshot $oldCentralSnapshot $legacyProject 'Unsupported central controller check wrote to the consumer'
+        Assert-Equal $oldCentralLockTime ([IO.File]::GetLastWriteTimeUtc((Join-Path $legacyProject 'AGENTS.lock.json')).Ticks) 'Unsupported central controller check rewrote the lock.'
+        Assert-True (-not [IO.File]::Exists($localExecutionMarker)) 'Unsupported central controller check executed the local interpreter.'
+        $testCount++
+        Write-Host 'PASS: Central launcher protocol validation rejects the actual historical controller without project writes.'
+        Write-TestBytes $localInterpreterPath $recoveredInterpreterBytes
+        $testCount++
+        Write-Host 'PASS: A failed central clone leaves the consumer unchanged and never executes its local interpreter.'
+        $batchTemp = Join-Path $fixtureRoot 'independent BAT TEMP'
+        $batchTmp = Join-Path $fixtureRoot 'independent shell TMP'
+        [void][IO.Directory]::CreateDirectory($batchTemp)
+        [void][IO.Directory]::CreateDirectory($batchTmp)
+        $separateTempSnapshot = Get-ProjectSnapshot $legacyProject
+        $separateTempLockTime = [IO.File]::GetLastWriteTimeUtc((Join-Path $legacyProject 'AGENTS.lock.json')).Ticks
+        # Omit all routing arguments: the BAT must provide its project root and the
+        # controller must remember the payload repository/ref from the existing lock.
+        Assert-Exit (Invoke-TestBatch (Join-Path $legacyProject 'fetch-agents.bat') @('-Check') $centralSource @{ TEMP = $batchTemp; TMP = $batchTmp }) 0 'Consumer BAT uses its default root and cleans its cache when TEMP differs from TMP.'
+        Assert-Snapshot $separateTempSnapshot $legacyProject 'Default-root BAT Check with separate TEMP/TMP wrote to the consumer'
+        Assert-Equal $separateTempLockTime ([IO.File]::GetLastWriteTimeUtc((Join-Path $legacyProject 'AGENTS.lock.json')).Ticks) 'Separate TEMP/TMP Check rewrote the lock.'
+        Assert-Equal 0 ([IO.Directory]::GetFileSystemEntries($batchTemp).Length) 'BAT left a central checkout or other cache in its TEMP directory.'
+        Assert-Equal 0 ([IO.Directory]::GetFileSystemEntries($batchTmp).Length) 'Controller left a source or installer cache in its TMP directory.'
+        $testCount++
+        Write-Host 'PASS: Default-root BAT Check preserves the current consumer and removes all caches with distinct TEMP/TMP directories.'
+    } else {
+        $skipCount++
+        Write-Host 'SKIP: Central BAT independence and clone-failure checks require Windows.'
+    }
 
     # This release needs a newer seed allowlist, so an installed older interpreter
     # cannot succeed merely by reading the new manifest with its own implementation.
@@ -530,7 +617,7 @@ try {
     Write-TestText (Join-Path $futureSource $futureSeed) "# Future project-owned operation seed.`n"
     $futureManifestPath = Join-Path $futureSource 'AGENTS.framework.json'
     $futureManifest = Read-TestJson $futureManifestPath
-    $futureManifest | Add-Member -NotePropertyName installerProtocolVersion -NotePropertyValue 1 -Force
+    $futureManifest | Add-Member -NotePropertyName installerProtocolVersion -NotePropertyValue 2 -Force
     $futureManifest.files = @($futureManifest.files) + @([pscustomobject]@{
         source = $futureSeed; target = $futureSeed; mode = 'seed'
         sha256 = Get-TestHash ([IO.File]::ReadAllBytes((Join-Path $futureSource $futureSeed)))
@@ -563,6 +650,16 @@ try {
     [void](Invoke-TestGit @('-C', $badInstallerSource, 'branch', '-f', $compatibilityRef))
     Assert-ProjectEntryReadOnly $legacyProject $badInstallerSource $recoverySource $compatibilityRef @('-Check') 1 'Source installer hash mismatch blocks handoff before execution.' 'Payload hash mismatch'
     Assert-True (-not [IO.File]::Exists($executionMarker)) 'A source installer with an invalid payload hash was executed.'
+    if ($windows) {
+        $invalidCentralSnapshot = Get-ProjectSnapshot $legacyProject
+        $invalidCentralLockTime = [IO.File]::GetLastWriteTimeUtc((Join-Path $legacyProject 'AGENTS.lock.json')).Ticks
+        Assert-Exit (Invoke-TestBatch (Join-Path $legacyProject 'fetch-agents.bat') $cloneFailureArguments $badInstallerSource) 1 'Central BAT rejects its cloned interpreter hash mismatch before executing it.'
+        Assert-Snapshot $invalidCentralSnapshot $legacyProject 'Invalid central interpreter check wrote to the consumer'
+        Assert-Equal $invalidCentralLockTime ([IO.File]::GetLastWriteTimeUtc((Join-Path $legacyProject 'AGENTS.lock.json')).Ticks) 'Invalid central interpreter check rewrote the lock.'
+        Assert-True (-not [IO.File]::Exists($executionMarker)) 'Central BAT executed an unverified cloned interpreter.'
+        $testCount++
+        Write-Host 'PASS: Central BAT verifies its cloned interpreter before execution and leaves the consumer unchanged on hash failure.'
+    }
 
     $installedLegacyInstaller = Join-Path $legacyProject 'scripts/fetch-agents.ps1'
     Write-TestText $installedLegacyInstaller ([IO.File]::ReadAllText($installedLegacyInstaller, $utf8) + "`n# Local customized installer fixture.`n")
@@ -591,6 +688,17 @@ try {
     Assert-Equal '1.0.0' $rollbackLock.frameworkVersion 'Historical rollback must record version 1.0.0.'
     Assert-Equal $legacyCommit $rollbackLock.commit 'Historical rollback must record the old source commit.'
     Assert-Equal (Get-TestBytes $legacyInstaller) (Get-TestBytes $installedLegacyInstaller) 'Historical rollback must restore the actual old interpreter bytes.'
+    if ($windows) {
+        Assert-Equal (Get-TestBytes (Join-Path $centralSource 'fetch-agents.bat')) (Get-TestBytes (Join-Path $legacyProject 'fetch-agents.bat')) 'Historical payload rollback downgraded the current central BAT.'
+        Assert-Equal (Get-TestHash ([IO.File]::ReadAllBytes((Join-Path $centralSource 'fetch-agents.bat')))) $rollbackLock.managedFiles.'fetch-agents.bat' 'Rollback lock must baseline the actual central BAT bytes.'
+        Assert-Equal $recoveryCommit $rollbackLock.launcher.commit 'Rollback must retain the current central launcher provenance.'
+        Assert-ProjectEntryReadOnly $legacyProject $legacySource $legacySource 'main' @('-Check') 0 'Consumer BAT checks the pinned old payload without running its installed old interpreter.'
+        Assert-ProjectEntryReadOnly $legacyProject $recoverySource $recoverySource $compatibilityRef @('-Check') 2 'Consumer BAT can upgrade again after a real 1.0.0 rollback without manual file replacement.'
+        Assert-Exit (Invoke-ProjectEntry $legacyProject $recoverySource $recoverySource $compatibilityRef @()) 0 'Consumer BAT upgrades the rolled-back payload again without manual recovery.'
+        Assert-Equal '1.1.0' (Read-TestJson (Join-Path $legacyProject 'AGENTS.lock.json')).frameworkVersion 'Re-upgrade after rollback must record the new payload version.'
+        $testCount++
+        Write-Host 'PASS: Historical rollback retains the current central BAT, which can upgrade again through the normal consumer entry.'
+    }
     foreach ($relative in $legacyOwnedFiles.Keys) {
         Assert-Equal $legacyOwnedFiles[$relative] (Get-TestBytes (Join-Path $legacyProject $relative)) "Historical rollback replaced project-owned content: $relative"
     }

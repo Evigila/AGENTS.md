@@ -4,7 +4,7 @@
 
 This repository distributes text instructions and a manifest-based PowerShell installer. There are no package-manager manifests, application projects, NuGet/npm packages, local project references, fonts, icons, databases, or deployed application services. No third-party PowerShell modules or Pester packages are required.
 
-Evidence: `scripts/fetch-agents.ps1`, `scripts/publish-framework.ps1`, `fetch-agents.bat`, `tests/test-sync.ps1`, and `.github/workflows/verify.yml`. The root `debug-handler.bat` is an empty seed and introduces no dependency. The test fixtures are temporary local Git repositories; network access is needed only for live synchronization/bootstrap CI checkout, and the Windows bootstrap smoke step.
+Evidence: `scripts/fetch-agents.ps1`, `scripts/publish-framework.ps1`, `fetch-agents.bat`, `tests/test-sync.ps1`, and `.github/workflows/verify.yml`. The root `debug-handler.bat` is an empty seed and introduces no dependency. BAT operations acquire the central controller on every run, even when the selected payload is local. Integration tests redirect the central Git URL through child-process-only Git configuration to temporary local repositories; no global configuration or network is required. Hosted checkout and live bootstrap smoke verification require network access.
 
 ## Direct tools, runtimes, and services
 
@@ -15,7 +15,7 @@ Evidence: `scripts/fetch-agents.ps1`, `scripts/publish-framework.ps1`, `fetch-ag
 | Git | Available on PATH; Git for Windows for the BAT launcher; historical commit objects required by regression tests | Observed locally: 2.56.0.windows.1; no project minimum version pin | Installer, bootstrap, tests, development | Temporary fetch/clone, commit/tree/blob reads, historical fixture archives, and isolated repositories; CI uses `fetch-depth: 0` |
 | Windows CMD | Windows `cmd.exe` | Operating-system component, unpinned | Optional Windows entry point | `fetch-agents.bat`; PowerShell can also run directly on Linux/macOS |
 | curl | Windows `curl.exe`, HTTPS download | Observed locally: 8.21.0; operating-system/tool installation, unpinned | First-install command only | README bootstrap downloads the launcher; later launcher updates use Git |
-| GitHub Git/HTTPS | Public repository and raw-file service | `https://github.com/Evigila/AGENTS.md.git`; selected branch/tag/commit recorded in consumer lock | Default synchronization/bootstrap source | Installer default and BAT bootstrap; a compatible alternate source can be selected |
+| GitHub Git/HTTPS | Public repository and raw-file service | `https://github.com/Evigila/AGENTS.md.git` `main` for the controller; selected payload branch/tag/commit recorded independently | Every Windows BAT synchronization/check and default payload source | Verified central controller acquisition; compatible alternate payload sources can be selected without changing the controller source |
 | GitHub Actions | Hosted workflow service | `windows-latest`, `ubuntu-latest`; image contents are provider-managed | CI only | Workflow matrix runs manifest verification and the local integration suite |
 | `actions/checkout` | Commit-pinned action | `11d5960a326750d5838078e36cf38b85af677262` (v4 ref inspected) | CI only, direct action dependency | `.github/workflows/verify.yml`; action checks out the repository |
 | Node.js action runtime | `node20` declared by the pinned checkout action | Supplied by GitHub Actions; not a local installer dependency | CI only, transitive runtime | Pinned action's `action.yml` declares `runs.using: node20` |

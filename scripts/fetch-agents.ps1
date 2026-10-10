@@ -193,7 +193,7 @@ try {
         if ($desired.ContainsKey($entry.target) -or $entry.target -in @('AGENTS.framework.json', 'AGENTS.lock.json')) { throw 'Duplicate or reserved manifest target.' }
         if ($entry.mode -eq 'managed') { Assert-ManagedPath $entry.target }
         elseif ($entry.mode -eq 'seed') {
-            if ($entry.target -ne 'AGENTS.ensure.json' -and $entry.target -ne 'docs/.gitkeep' -and
+            if ($entry.target -ne 'AGENTS.ensure.json' -and $entry.target -ne 'debug-handler.bat' -and $entry.target -ne 'docs/.gitkeep' -and
                 -not $entry.target.StartsWith('docs-ai/current/', [StringComparison]::Ordinal)) { throw 'Invalid project template target.' }
         } else { throw 'Unknown manifest file mode.' }
         if ($entry.sha256 -notmatch '^[0-9a-f]{64}$') { throw 'Invalid payload hash.' }

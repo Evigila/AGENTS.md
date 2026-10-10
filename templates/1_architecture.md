@@ -21,7 +21,7 @@ Replace the placeholder below with a complete hierarchical tree rooted at the re
 
 ## Root files and module responsibilities
 
-Populate from inspected files. Describe the purpose of each important root file and each maintained root directory, then explain the responsibilities of significant modules below them.
+Populate from inspected files. Describe the purpose of each important root file and each maintained root directory, then explain the responsibilities of significant modules below them. Include `scripts/`, the framework launcher `fetch-agents.bat`, and the project-owned operation entry point `debug-handler.bat`; inspect its contents before describing implemented operations, because it is initially empty.
 
 | Repository-relative path | Responsibility | Evidence |
 | --- | --- | --- |

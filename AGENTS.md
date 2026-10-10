@@ -10,6 +10,7 @@ First inspect `AGENTS.ensure.json`, then complete the routing below. Follow the 
 | Code, solution, project, namespace, or public API changes | Relevant sections of [codedesign.md](docs-ai/common/codedesign.md), affected source, and applicable repository configuration |
 | UI or UX work | [UIUX.md](docs-ai/common/UIUX.md), then actual Flourish components, styles, public contracts, and host usage |
 | Repository structure or architecture work | [1_architecture.md](docs-ai/current/1_architecture.md), then affected solution/project files and source |
+| Project scripts, debugging, database resets, remote tag publication, or NuGet publication | [rules.md: Project scripts and entry points](docs-ai/common/rules.md#project-scripts-and-entry-points), then affected scripts and operation configuration |
 | Dependency, SDK, package, service, asset, build, or deployment dependency changes | [rules.md: External dependencies](docs-ai/common/rules.md#external-dependencies) and [1_dependency.md](docs-ai/current/1_dependency.md), then dependency declarations and resolved evidence |
 | Documentation creation, restructuring, or audit | [rules.md: Documentation contract](docs-ai/common/rules.md#documentation-contract) and [Full documentation audit](docs-ai/common/rules.md#full-documentation-audit) |
 | Implementation, testing, or delivery | [rules.md: Implementation and verification](docs-ai/common/rules.md#implementation-and-verification) and [Delivery and records](docs-ai/common/rules.md#delivery-and-records) |

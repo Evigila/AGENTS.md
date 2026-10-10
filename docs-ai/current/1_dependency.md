@@ -4,17 +4,17 @@
 
 This repository distributes text instructions and a manifest-based PowerShell installer. There are no package-manager manifests, application projects, NuGet/npm packages, local project references, fonts, icons, databases, or deployed application services. No third-party PowerShell modules or Pester packages are required.
 
-Evidence: `scripts/fetch-agents.ps1`, `scripts/publish-framework.ps1`, `fetch-agents.bat`, `tests/test-sync.ps1`, and `.github/workflows/verify.yml`. The test fixtures are temporary local Git repositories; network access is needed only for live synchronization/bootstrap CI checkout, and the Windows bootstrap smoke step.
+Evidence: `scripts/fetch-agents.ps1`, `scripts/publish-framework.ps1`, `fetch-agents.bat`, `tests/test-sync.ps1`, and `.github/workflows/verify.yml`. The root `debug-handler.bat` is an empty seed and introduces no dependency. The test fixtures are temporary local Git repositories; network access is needed only for live synchronization/bootstrap CI checkout, and the Windows bootstrap smoke step.
 
 ## Direct tools, runtimes, and services
 
 | Dependency | Constraint or contract | Observed version / pin | Scope and consumers | Purpose and evidence |
 | --- | --- | --- | --- | --- |
-| PowerShell | Windows PowerShell 5.1 or PowerShell 7 | Local verification: 7.4.7; CI tests platform-provided versions | Installer, publisher, tests | `#requires -Version 5.1`; uses built-in cmdlets and .NET APIs only |
-| .NET framework/runtime | Supplied with the selected PowerShell edition | Local verification: .NET 8.0.12; resolved by PowerShell distribution, no independent pin | Installer/publisher/tests | UTF-8, JSON, SHA-256, process execution, and file operations; no additional assembly/package installation |
-| Git | Available on PATH; Git for Windows for the BAT launcher | Local verification: 2.51.1; no project minimum version pin | Installer, bootstrap, tests, development | Temporary fetch/clone, commit/tree/blob reads, and isolated fixture construction |
+| PowerShell | Windows PowerShell 5.1 or PowerShell 7 | Observed locally: 5.1.26100.9444 and 7.6.5; CI tests platform-provided versions | Installer, publisher, tests | `#requires -Version 5.1`; uses built-in cmdlets and .NET APIs only |
+| .NET framework/runtime | Supplied with the selected PowerShell edition | Observed locally: .NET Framework 4.8.9345.0 and .NET 10.0.11; resolved by PowerShell distribution, no independent pin | Installer/publisher/tests | UTF-8, JSON, SHA-256, process execution, and file operations; no additional assembly/package installation |
+| Git | Available on PATH; Git for Windows for the BAT launcher | Observed locally: 2.56.0.windows.1; no project minimum version pin | Installer, bootstrap, tests, development | Temporary fetch/clone, commit/tree/blob reads, and isolated fixture construction |
 | Windows CMD | Windows `cmd.exe` | Operating-system component, unpinned | Optional Windows entry point | `fetch-agents.bat`; PowerShell can also run directly on Linux/macOS |
-| curl | Windows `curl.exe`, HTTPS download | Operating-system/tool installation, unpinned | First-install command only | README bootstrap downloads the launcher; later launcher updates use Git |
+| curl | Windows `curl.exe`, HTTPS download | Observed locally: 8.21.0; operating-system/tool installation, unpinned | First-install command only | README bootstrap downloads the launcher; later launcher updates use Git |
 | GitHub Git/HTTPS | Public repository and raw-file service | `https://github.com/Evigila/AGENTS.md.git`; selected branch/tag/commit recorded in consumer lock | Default synchronization/bootstrap source | Installer default and BAT bootstrap; a compatible alternate source can be selected |
 | GitHub Actions | Hosted workflow service | `windows-latest`, `ubuntu-latest`; image contents are provider-managed | CI only | Workflow matrix runs manifest verification and the local integration suite |
 | `actions/checkout` | Commit-pinned action | `11d5960a326750d5838078e36cf38b85af677262` (v4 ref inspected) | CI only, direct action dependency | `.github/workflows/verify.yml`; action checks out the repository |

@@ -35,13 +35,17 @@ fetch-agents.bat -Check
 | `AGENTS.framework.json` | 本框架清单和版本控制 |
 | `AGENTS.lock.json` | 用于跟踪 |
 | `AGENTS.ensure.json` | 审计结果文档 |
-| `docs-ai/current/` | 当前项目的文档，ai agent会被要求仅在该文件夹中编辑和创作，它是面向ai的。同时失去docs/文件夹的控制权，你需要显式授予权限 |
+| `docs-ai/current/` | AI 维护的当前项目事实和记录；未经你显式授权，AI 不得修改 `docs/` 下的人工文档 |
 | `docs-ai/current/1_changelogs/` | 当前项目的变更记录 |
 | `docs-ai/current/1_bugreports/` | 当前项目曾遇到过的问题，以及修复方案 |
 | `docs-ai/current/1_archived/` | 已被废弃的档案 |
 | `docs/` | 你应当人工维护的文档，面向人类 |
 | `fetch-agents.bat`, `scripts/fetch-agents.ps1` | 快捷处理器，快速检查和同步 |
+| `scripts/` | 项目操作脚本和框架同步实现 |
+| `debug-handler.bat` | 初始为空的项目操作统一入口，仅在文件不存在时创建 |
 | `templates/`, publisher, tests, CI, README | 不会被复制到你的仓库 |
+
+AI 创建的项目脚本应放在 `scripts/` 下；根目录只允许创建 `debug-handler.bat` 和 `fetch-agents.bat`。调试启动项目、清除数据库、发布远端 Git Tag、发布 NuGet 等操作必须统一通过 `debug-handler.bat` 入口，可由它调用 `scripts/` 下的独立脚本。该入口属于当前项目，框架同步会保留已有内容，包括使用 `-Force` 时。
 
 ## 使用命令
 
@@ -89,7 +93,7 @@ fetch-agents.bat -Check
 
 ## 排除
 
-项目当前的 `current/` 文档和 `AGENTS.ensure.json` 会始终被排除，这意味着同步不会覆盖。但是使用`-Force` 时仍然会替代，不过会在`.agents/backups/`下生成备份。
+项目当前的 `current/` 文档、`AGENTS.ensure.json` 和 `debug-handler.bat` 仅在缺失时初始化。已有内容始终保留，包括使用 `-Force` 时。`-Force` 仅替换存在冲突的受管框架文件，并在 `.agents/backups/` 下生成备份。
 
 如果你对 -Force 覆盖有信心，可以删除备份。不过推荐过一个提交再删除，以保留一份 Git 历史避免不时之需。
 
@@ -100,4 +104,4 @@ fetch-agents.bat -Check
 
 ## 许可证
 
-使用 [MIT License](https://github.com/Evigila/AGENTS.md/blob/main/LICENSE.txt)。
+使用 [MIT License](https://github.com/Evigila/AGENTS.md/blob/main/LICENSE)。

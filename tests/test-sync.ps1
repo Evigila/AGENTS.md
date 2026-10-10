@@ -242,6 +242,16 @@ try {
     Assert-Exit (Invoke-TestScript $publisher @('-Check')) 0 'The initial fixture manifest has valid payload hashes.'
     $initialCommit = Commit-TestRepository $source 'Initial 1.0.0 framework fixture'
 
+    $existingEntryProject = Join-Path $fixtureRoot 'project with existing script entry'
+    Initialize-TestRepository $existingEntryProject
+    $existingEntryPath = Join-Path $existingEntryProject 'debug-handler.bat'
+    Write-TestText $existingEntryPath "@echo off`r`nrem Existing project-owned script dispatch.`r`n"
+    $existingEntryBytes = Get-TestBytes $existingEntryPath
+    Assert-Exit (Invoke-TestScript $installer @('-ProjectRoot', $existingEntryProject, '-SourcePath', $source, '-Repository', $source, '-Ref', 'main')) 0 'Initial installation with an existing project script entry succeeds.'
+    Assert-Equal $existingEntryBytes (Get-TestBytes $existingEntryPath) 'Initial installation replaced the existing project script entry.'
+    $testCount++
+    Write-Host 'PASS: Initial install preserves an existing custom debug-handler.bat.'
+
     Initialize-TestRepository $project
     Write-TestText (Join-Path $project 'README.md') "Project readme.`n"
     Write-TestText (Join-Path $project 'docs-ai/current/1_architecture.md') "Project architecture already edited by its owner.`r`n"
@@ -271,8 +281,15 @@ try {
     Assert-Equal $initialCommit $lock.commit 'Initial lock pins the resolved source commit.'
     Assert-True ([IO.File]::Exists((Join-Path $project 'docs-ai/common/retired-test.md'))) 'Initial managed fixture file was not installed.'
     Assert-True ([IO.File]::Exists((Join-Path $project 'docs/.gitkeep'))) 'Missing documentation directory seed was not installed.'
+    Assert-True ([IO.Directory]::Exists((Join-Path $project 'scripts'))) 'Required scripts directory was not installed.'
+    $debugHandlerPath = Join-Path $project 'debug-handler.bat'
+    Assert-True ([IO.File]::Exists($debugHandlerPath)) 'Missing project script entry seed was not installed.'
+    Assert-Equal 0 ([IO.File]::ReadAllBytes($debugHandlerPath).Length) 'Initial project script entry must be empty.'
+    Assert-True ($null -eq $lock.managedFiles.PSObject.Properties['debug-handler.bat']) 'Project script entry must not be managed by the lock.'
     $testCount++
     Write-Host 'PASS: Initial install preserves UTF-16 configuration, project files, index, HEAD, and origin.'
+    $testCount++
+    Write-Host 'PASS: Initial install creates an empty project-owned debug-handler.bat seed.'
     Assert-ReadOnlySync $source @('-Check') 0 'Current Check succeeds without rewriting the lock.'
     Assert-ReadOnlySync $source @() 0 'Current installer is a no-op without rewriting the lock.'
     $normalizationPath = Join-Path $project 'docs-ai/common/rules.md'
@@ -292,6 +309,9 @@ try {
         Write-Host 'SKIP: Installed BAT execution requires Windows.'
     }
 
+    Write-TestText $debugHandlerPath "@echo off`r`nrem Project-owned script dispatch.`r`n"
+    $userFiles['debug-handler.bat'] = Get-TestBytes $debugHandlerPath
+    Assert-ReadOnlySync $source @('-Check') 0 'Check accepts project-owned debug-handler.bat customization without conflicts or writes.'
     Write-TestText (Join-Path $project 'docs-ai/current/1_dependency.md') "Edited dependency documentation after the initial install.`n"
     $userFiles['docs-ai/current/1_dependency.md'] = Get-TestBytes (Join-Path $project 'docs-ai/current/1_dependency.md')
     Add-TestManifestFile $source '.agents/skills/test-added/SKILL.md' "---`nname: test-added`ndescription: Integration fixture for managed skill additions.`n---`nNew managed skill in version 1.0.1.`n"
@@ -326,6 +346,8 @@ try {
     Assert-True ($null -eq $lock.managedFiles.PSObject.Properties['docs-ai/common/retired-test.md']) 'Removed file remains managed by the lock.'
     $testCount++
     Write-Host 'PASS: Published upgrade adds and removes managed files while preserving project edits and unknown files.'
+    $testCount++
+    Write-Host 'PASS: Published upgrade preserves customized debug-handler.bat bytes.'
 
     $rulesTarget = Join-Path $project 'docs-ai/common/rules.md'
     [IO.File]::WriteAllText($rulesTarget, "Committed project-specific managed customization.`r`nPreserve these exact UTF-16 BOM and CRLF bytes in backup.`r`n", $unicode)

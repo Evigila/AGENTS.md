@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "frameworkVersion": "1.0.0",
+  "frameworkVersion": "1.1.0",
   "repository": "Evigila/AGENTS.md",
   "files": [
     {
       "source": "AGENTS.md",
       "target": "AGENTS.md",
       "mode": "managed",
-      "sha256": "45e67ec0be2d6129c5699905135a05cb5374ae904b81b7be2963dbc6aa7baabe"
+      "sha256": "5b20c9775dafe8adbe9aeef82c34f2a53846c6c31057177fb144fafceb882fcd"
     },
     {
       "source": "fetch-agents.bat",
@@ -16,16 +16,22 @@
       "sha256": "6ca9ae52e96f275b1d93e14abc928c32b583a4b6ded4679719a7311766eacb08"
     },
     {
+      "source": "debug-handler.bat",
+      "target": "debug-handler.bat",
+      "mode": "seed",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
       "source": "scripts/fetch-agents.ps1",
       "target": "scripts/fetch-agents.ps1",
       "mode": "managed",
-      "sha256": "e2b4a0a4398e130336bbbd9ca24e16977490ced8c44f7e8afceec2b4290482d3"
+      "sha256": "cb6e3784cf95668f91d5a0c4a0ef45718a6077e4b3bed81ee9125b16c4391f98"
     },
     {
       "source": "docs-ai/common/rules.md",
       "target": "docs-ai/common/rules.md",
       "mode": "managed",
-      "sha256": "6ed5ae48031977d6bf9b7a3587a6528353ea3efb380a5828c7d99545b7c0d54b"
+      "sha256": "a779b7402a9639773533bf213b77bfa655ccf0cce566efc4bb4a3d09e7c2b410"
     },
     {
       "source": "docs-ai/common/codedesign.md",
@@ -73,7 +79,7 @@
       "source": "templates/1_architecture.md",
       "target": "docs-ai/current/1_architecture.md",
       "mode": "seed",
-      "sha256": "d95e5e5bf42bfad506343e47de41eccbb05182a89482496af3a5a4f91f901f3c"
+      "sha256": "8f90df449ce46b2499f42e7befafdafacf2f1ce25b050f6df9bef0ebb399c8a2"
     },
     {
       "source": "templates/1_dependency.md",

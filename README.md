@@ -37,13 +37,17 @@ fetch-agents.bat -Check
 | `AGENTS.framework.json` | Framework manifest and version control |
 | `AGENTS.lock.json` | Tracking file |
 | `AGENTS.ensure.json` | Documentation audit results |
-| `docs-ai/current/` | Project-specific documentation intended for AI agents. <br />Agents are instructed to create and edit documents **only** in this directory. They do **NOT** have permission to modify `docs/` unless you explicitly grant it. |
+| `docs-ai/current/` | AI-maintained project facts and records. Agents do **NOT** have permission to modify human documentation under `docs/` unless you explicitly grant it. |
 | `docs-ai/current/1_changelogs/` | Change history for the current project |
 | `docs-ai/current/1_bugreports/` | Previously encountered issues and their fixes |
 | `docs-ai/current/1_archived/` | Archived and obsolete |
 | `docs/` | You should maintain manually **HUMAN** |
 | `fetch-agents.bat`, `scripts/fetch-agents.ps1` | Quick launcher for checking and synchronizing |
+| `scripts/` | Project operation scripts and the synchronization implementation |
+| `debug-handler.bat` | Initially empty, unified entry point for project operations; created only when missing |
 | `templates/`, publisher, tests, CI, README | Will **NOT** copied into your repository |
+
+AI-created scripts belong under `scripts/`; only `debug-handler.bat` and `fetch-agents.bat` may be created at the root. Starting the project for debugging, clearing databases, publishing remote Git tags, and publishing NuGet packages must use `debug-handler.bat`, which may call separate scripts under `scripts/`. Framework synchronization preserves any existing content in this project-owned entry point, including with `-Force`.
 
 ## Commands
 
@@ -91,7 +95,7 @@ fetch-agents.bat -Check
 
 ## Exclusions
 
-Project-specific documentation under `current/` and `AGENTS.ensure.json` are **excluded** from normal synchronization, so they will **NOT** be overwritten. However, `-Force` can **still** replace them, with backups created under `.agents/backups/`.
+Project-specific documentation under `current/`, `AGENTS.ensure.json`, and `debug-handler.bat` are seeded only when missing. Synchronization preserves existing contents, including with `-Force`. The `-Force` option replaces conflicting managed framework files and creates backups under `.agents/backups/`.
 
 If you are confident with `-Force` replacement, you can delete the backups. It is **recommended** to make a Git commit first so you retain a copy in Git history in case you need it later.
 
@@ -102,4 +106,4 @@ If you are confident with `-Force` replacement, you can delete the backups. It i
 
 ## License
 
-Licensed under the [MIT License](https://github.com/Evigila/AGENTS.md/blob/main/LICENSE.txt).
+Licensed under the [MIT License](https://github.com/Evigila/AGENTS.md/blob/main/LICENSE).

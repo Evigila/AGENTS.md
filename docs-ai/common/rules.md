@@ -53,7 +53,9 @@ The following paths are required. Directory entries ending in `/` denote directo
 | `AGENTS.ensure.json` | Documentation audit state |
 | `AGENTS.framework.json` | Installed release version and payload manifest |
 | `AGENTS.lock.json` | Installed source commit, version, and managed-file baselines; generated in consumer projects |
+| `scripts/` | Project operation scripts and the framework synchronization implementation |
 | `fetch-agents.bat` and `scripts/fetch-agents.ps1` | Framework initialization, version checks, and synchronization |
+| `debug-handler.bat` | Initially empty, project-owned unified entry point for project operations |
 | `docs/` and `docs/.gitkeep` | Human documentation area and empty directory marker |
 | `docs-ai/common/codedesign.md` | Shared code standards |
 | `docs-ai/common/rules.md` | Shared workflow and documentation rules |
@@ -132,7 +134,7 @@ Use `.agents/skills/` for repository-scoped skill packages. A package must conta
 
 Run `fetch-agents.bat -Check` to check without modifying project files. Run the launcher without `-Check` to apply an authorized update. A request to update the framework authorizes its listed managed changes, not arbitrary project modifications. Do not perform a network version check during every unrelated development task.
 
-Updates manage only manifest-listed public files and files recorded as owned in the existing lock. Seed templates initialize missing project files and never overwrite existing `current/` content or `AGENTS.ensure.json`. Preserve user-created skills and unrelated files. Do not copy central project facts into consumer projects.
+Updates manage only manifest-listed public files and files recorded as owned in the existing lock. Seed templates initialize missing project files and never overwrite existing `current/` content, `AGENTS.ensure.json`, or `debug-handler.bat`, including with `-Force`. Preserve user-created skills and unrelated files. Do not copy central project facts into consumer projects.
 
 Detect modifications against the last imported content hashes, including committed local customizations. Stop on a conflict unless replacement is explicitly authorized. `-Force` backs up conflicting existing files before replacement and may permit an intentional downgrade; it never overrides project-file protection, path validation, or payload validation.
 
@@ -145,6 +147,14 @@ Do not add, replace, or upgrade an external dependency without explicit task aut
 Before seeking authorization that is not already present, prepare a concrete explanation of the need, existing alternatives, compatibility, and build/runtime/deployment impact. Identify the affected declarations and inventory entries. Do not add a dependency to prepare that explanation.
 
 Apply approved changes through the repository's existing dependency-management mechanism. Verify affected builds and behavior, then update `1_dependency.md`. The inventory records usage; an inventory entry itself does not authorize adoption or migration.
+
+## Project scripts and entry points
+
+Keep project operation scripts under the root `scripts/` directory. AI must not create root-level scripts other than exactly `debug-handler.bat` and `fetch-agents.bat`, regardless of script language or extension.
+
+Project operations such as starting the project for debugging, clearing a database, publishing remote Git tags, or publishing NuGet packages must use the root `debug-handler.bat` as their unified entry point. Separate scripts may implement these operations under `scripts/`; invoke them through `debug-handler.bat` rather than creating additional root launchers. `fetch-agents.bat` remains the entry point for framework synchronization.
+
+Initialize `debug-handler.bat` as an empty file. Add project-specific dispatch or commands when implementing an authorized operation. The file belongs to the project: framework installation seeds it only when missing, and framework updates preserve its existing contents.
 
 ## Implementation and verification
 

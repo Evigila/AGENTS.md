@@ -93,6 +93,18 @@ AI-created scripts belong under `scripts/`; only `debug-handler.bat` and `fetch-
 .\fetch-agents.bat -Repository "Git repository URL" -Ref main
 ```
 
+## Recovering a legacy installer
+
+An older installed script may report `Invalid project template target` when a new release adds a template it does not recognize. From a current central checkout, run its installer against the consumer repository while keeping the consumer's lock and installed files intact:
+
+```powershell
+& 'C:\path\to\AGENTS.md\scripts\fetch-agents.ps1' -ProjectRoot 'C:\path\to\consumer' -Check
+```
+
+For an authorized update, run the same command without `-Check`. Do not overwrite the consumer installer by hand or delete its lock; normal synchronization must retain conflict detection and project-file protection.
+
+New releases declare installer protocol `1`. Compatible installed scripts verify and temporarily run the installer from the selected source commit before interpreting new payload paths. The original repository/ref remains in the lock, and `-Check` leaves all consumer files unchanged. Legacy manifests without that protocol continue through the running script, including intentional rollback.
+
 ## Exclusions
 
 Project-specific documentation under `current/`, `AGENTS.ensure.json`, and `debug-handler.bat` are seeded only when missing. Synchronization preserves existing contents, including with `-Force`. The `-Force` option replaces conflicting managed framework files and creates backups under `.agents/backups/`.

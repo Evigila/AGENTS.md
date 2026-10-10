@@ -91,6 +91,18 @@ AI 创建的项目脚本应放在 `scripts/` 下；根目录只允许创建 `deb
 .\fetch-agents.bat -Repository "仓库Git地址" -Ref main
 ```
 
+## 旧版同步器恢复
+
+旧版同步器可能因不认识新版本新增的模板而报 `Invalid project template target`。请使用当前中央仓库中的同步器检查目标项目，并保留目标项目原有的锁文件和已安装文件：
+
+```powershell
+& 'C:\中央仓库路径\AGENTS.md\scripts\fetch-agents.ps1' -ProjectRoot 'C:\目标项目路径' -Check
+```
+
+确认需要更新后，使用同一命令去掉 `-Check`。不要手动覆盖项目中的同步器或删除锁文件，正常同步需要继续检查本地冲突并保护项目文件。
+
+新版清单声明同步器协议 `1`。兼容的同步器会先固定源提交，校验并在临时目录运行该提交中的同步器，再解析新增的模板路径；锁文件仍保留原仓库和分支或版本引用，`-Check` 不修改项目文件。没有协议字段的旧版清单继续由当前同步器处理，包含主动回退的场景。
+
 ## 排除
 
 项目当前的 `current/` 文档、`AGENTS.ensure.json` 和 `debug-handler.bat` 仅在缺失时初始化。已有内容始终保留，包括使用 `-Force` 时。`-Force` 仅替换存在冲突的受管框架文件，并在 `.agents/backups/` 下生成备份。

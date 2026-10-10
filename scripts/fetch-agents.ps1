@@ -5,6 +5,8 @@ param(
     [string]$Repository,
     [string]$Ref,
     [string]$SourcePath,
+    [Parameter(DontShow)]
+    [string]$ResolvedCommit,
     [switch]$Check,
     [switch]$Force
 )
@@ -136,7 +138,47 @@ function Write-AtomicBytes([string]$Path, [byte[]]$Bytes) {
     }
 }
 
+function Invoke-SourceInstaller([string]$ScriptPath) {
+    $shellName = if ($PSVersionTable.PSEdition -eq 'Desktop') { 'powershell.exe' }
+        elseif ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) { 'pwsh.exe' }
+        else { 'pwsh' }
+    $arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $ScriptPath,
+        '-ProjectRoot', $root, '-Repository', $Repository, '-Ref', $Ref, '-SourcePath', $source, '-ResolvedCommit', $commit)
+    if ($Check) { $arguments += '-Check' }
+    if ($Force) { $arguments += '-Force' }
+    $start = New-Object System.Diagnostics.ProcessStartInfo
+    $start.FileName = Join-Path $PSHOME $shellName
+    $start.Arguments = (($arguments | ForEach-Object { Quote-NativeArgument $_ }) -join ' ')
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $start
+    try {
+        [void]$process.Start()
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        if ($stdoutTask.Result) { Write-Host $stdoutTask.Result.TrimEnd() }
+        if ($stderrTask.Result) { Write-Host $stderrTask.Result.TrimEnd() }
+        return $process.ExitCode
+    } finally { $process.Dispose() }
+}
+
+function Remove-TemporaryDirectory([string]$Path, [string]$Prefix) {
+    if (-not $Path -or -not [IO.Directory]::Exists($Path)) { return }
+    $resolvedPath = [IO.Path]::GetFullPath($Path)
+    $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    if (-not [IO.Path]::GetDirectoryName($resolvedPath).Equals($temporaryRoot, [StringComparison]::OrdinalIgnoreCase) -or
+        [IO.Path]::GetFileName($resolvedPath) -notmatch ('^' + [regex]::Escape($Prefix) + '[0-9a-f]{32}$')) {
+        throw "Refusing cleanup outside the expected temporary directory: $resolvedPath"
+    }
+    Remove-Item -LiteralPath $resolvedPath -Recurse -Force
+}
+
 $temporaryRepository = $null
+$temporaryInstaller = $null
 $exitCode = 1
 try {
     $root = [IO.Path]::GetFullPath($ProjectRoot).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
@@ -152,21 +194,20 @@ try {
             $installed.manifestSha256 -notmatch '^[0-9a-f]{64}$' -or $installed.commit -notmatch '^[0-9a-f]{40}$') {
             throw 'Invalid AGENTS.lock.json. Resolve its state before synchronizing.'
         }
-        foreach ($property in $installed.managedFiles.PSObject.Properties) {
-            Assert-ManagedPath $property.Name
-            if ($property.Value -notmatch '^[0-9a-f]{64}$') { throw 'Invalid managed file hash in AGENTS.lock.json.' }
-            $baseline[$property.Name] = [string]$property.Value
-        }
     }
     if ([string]::IsNullOrWhiteSpace($Repository)) {
         $Repository = if ($installed) { [string]$installed.repository } else { 'https://github.com/Evigila/AGENTS.md.git' }
     }
     if ([string]::IsNullOrWhiteSpace($Ref)) { $Ref = if ($installed) { [string]$installed.ref } else { 'main' } }
     if ($Repository.StartsWith('-') -or $Ref.StartsWith('-')) { throw 'Repository and Ref must not be Git command options.' }
+    if ($ResolvedCommit -and (-not $SourcePath -or $ResolvedCommit -notmatch '^[0-9a-f]{40}$')) {
+        throw 'ResolvedCommit requires SourcePath and one full Git commit SHA.'
+    }
     if ($SourcePath) {
         $source = [IO.Path]::GetFullPath($SourcePath)
         if ($source.Equals($root, [StringComparison]::OrdinalIgnoreCase)) { throw 'SourcePath must not be the target repository.' }
-        $commit = Invoke-GitText @('-C', $source, 'rev-parse', ($Ref + '^{commit}'))
+        $sourceRef = if ($ResolvedCommit) { $ResolvedCommit } else { $Ref }
+        $commit = Invoke-GitText @('-C', $source, 'rev-parse', ($sourceRef + '^{commit}'))
     } else {
         $temporaryRepository = Join-Path ([IO.Path]::GetTempPath()) ('agents-source-' + [Guid]::NewGuid().ToString('N'))
         [void](Invoke-GitText @('init', '--bare', '--quiet', $temporaryRepository))
@@ -184,6 +225,33 @@ try {
     }
     if ($installed -and $manifest.frameworkVersion -eq $installed.frameworkVersion -and $manifestHash -ne $installed.manifestSha256) {
         throw 'Framework content changed without a version increment. Publish a new version first.'
+    }
+    if ($manifest.PSObject.Properties['installerProtocolVersion']) {
+        if ($manifest.installerProtocolVersion -ne 1) { throw 'Unsupported installer bootstrap protocol.' }
+        $installerEntries = @($manifest.files | Where-Object { $_.target -eq 'scripts/fetch-agents.ps1' })
+        if ($installerEntries.Count -ne 1 -or $installerEntries[0].mode -ne 'managed' -or
+            $installerEntries[0].sha256 -notmatch '^[0-9a-f]{64}$') { throw 'Invalid source installer entry.' }
+        $installerEntry = $installerEntries[0]
+        $installerBytes = Read-SourceFile ([string]$installerEntry.source)
+        if ((Get-ContentHash $installerBytes) -ne $installerEntry.sha256) { throw 'Source installer payload hash mismatch.' }
+        if ((Get-ContentHash ([IO.File]::ReadAllBytes($PSCommandPath))) -ne $installerEntry.sha256) {
+            $installerDirectory = Join-Path ([IO.Path]::GetTempPath()) ('agents-installer-' + [Guid]::NewGuid().ToString('N'))
+            if (Test-Path -LiteralPath $installerDirectory) { throw 'Temporary installer directory already exists.' }
+            $temporaryInstaller = $installerDirectory
+            $installerPath = Join-Path $temporaryInstaller 'scripts/fetch-agents.ps1'
+            [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($installerPath))
+            [IO.File]::WriteAllBytes($installerPath, $installerBytes)
+            Write-Host '[Agents] Using the verified installer from the selected source commit.'
+            $exitCode = Invoke-SourceInstaller $installerPath
+            exit $exitCode
+        }
+    }
+    if ($installed) {
+        foreach ($property in $installed.managedFiles.PSObject.Properties) {
+            Assert-ManagedPath $property.Name
+            if ($property.Value -notmatch '^[0-9a-f]{64}$') { throw 'Invalid managed file hash in AGENTS.lock.json.' }
+            $baseline[$property.Name] = [string]$property.Value
+        }
     }
     $desired = @{}
     $managedHashes = [ordered]@{}
@@ -301,6 +369,7 @@ try {
     }
 } catch { Write-Host ('[Agents] Error: ' + $_.Exception.Message) -ForegroundColor Red; $exitCode = 1 }
 finally {
-    if ($temporaryRepository -and [IO.Directory]::Exists($temporaryRepository)) { Remove-Item -LiteralPath $temporaryRepository -Recurse -Force }
+    Remove-TemporaryDirectory $temporaryInstaller 'agents-installer-'
+    Remove-TemporaryDirectory $temporaryRepository 'agents-source-'
 }
 exit $exitCode

@@ -220,6 +220,28 @@ function Assert-UserFiles {
     }
 }
 
+function Invoke-ProjectEntry([string]$Target, [string]$From, [string]$Repository, [string]$Ref, [string[]]$ExtraArguments) {
+    $arguments = @('-SourcePath', $From, '-Repository', $Repository, '-Ref', $Ref) + $ExtraArguments
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        $batchPath = Join-Path $Target 'fetch-agents.bat'
+        $command = (Quote-NativeArgument $batchPath) + ' ' + (($arguments | ForEach-Object { Quote-NativeArgument $_ }) -join ' ')
+        return Invoke-Native $env:ComSpec @() ('/d /s /c "' + $command + '"')
+    }
+    return Invoke-TestScript (Join-Path $Target 'scripts/fetch-agents.ps1') (@('-ProjectRoot', $Target) + $arguments)
+}
+
+function Assert-ProjectEntryReadOnly([string]$Target, [string]$From, [string]$Repository, [string]$Ref, [string[]]$Arguments,
+    [int]$Expected, [string]$Message, [string]$OutputPattern = '') {
+    $before = Get-ProjectSnapshot $Target
+    $lockPath = Join-Path $Target 'AGENTS.lock.json'
+    $lockTime = [IO.File]::GetLastWriteTimeUtc($lockPath).Ticks
+    Assert-Exit (Invoke-ProjectEntry $Target $From $Repository $Ref $Arguments) $Expected $Message $OutputPattern
+    Assert-Snapshot $before $Target "$Message wrote to the project"
+    Assert-Equal $lockTime ([IO.File]::GetLastWriteTimeUtc($lockPath).Ticks) "$Message rewrote the lock"
+    $script:testCount++
+    Write-Host "PASS: $Message"
+}
+
 try {
     Assert-True ([IO.File]::Exists((Join-Path $repositoryRoot 'AGENTS.framework.json'))) 'Publish AGENTS.framework.json before running the tests.'
     [void][IO.Directory]::CreateDirectory($fixtureRoot)
@@ -448,6 +470,133 @@ try {
     Assert-ReadOnlySync $source @('-Ref', $initialCommit) 1 'Pinning the older commit is refused by updater without writes.' 'older'
     Assert-UserFiles
     Assert-ProjectGitState $gitState $project
+
+    # Use the actual released code, not today's installer with a 1.0.0 version label.
+    $historicalCommit = '03ec2f6ebacb443585056b83c581f89a99c8ee36'
+    $legacyArchive = Join-Path $fixtureRoot 'historical-framework.zip'
+    $legacySource = Join-Path $fixtureRoot 'real historical framework'
+    [void](Invoke-TestGit @('-C', $repositoryRoot, 'archive', '--format=zip', ('--output=' + $legacyArchive), $historicalCommit))
+    Expand-Archive -LiteralPath $legacyArchive -DestinationPath $legacySource
+    Initialize-TestRepository $legacySource
+    $legacyCommit = Commit-TestRepository $legacySource 'Historical 03ec2f6 framework fixture'
+    $legacyProject = Join-Path $fixtureRoot 'historical consumer project'
+    Initialize-TestRepository $legacyProject
+    $legacyInstaller = Join-Path $legacySource 'scripts/fetch-agents.ps1'
+    Assert-Exit (Invoke-TestScript $legacyInstaller @('-ProjectRoot', $legacyProject, '-SourcePath', $legacySource, '-Repository', $legacySource, '-Ref', 'main')) 0 'The real historical installer creates the 1.0.0 consumer.'
+    Assert-Equal '1.0.0' (Read-TestJson (Join-Path $legacyProject 'AGENTS.lock.json')).frameworkVersion 'Historical consumer must start at the real 1.0.0 release.'
+    Assert-Equal (Get-TestBytes $legacyInstaller) (Get-TestBytes (Join-Path $legacyProject 'scripts/fetch-agents.ps1')) 'Historical consumer must contain the actual released installer bytes.'
+    $legacyOwnedFiles = @{}
+    foreach ($relative in @('AGENTS.ensure.json', 'docs-ai/current/1_architecture.md', 'docs-ai/current/1_dependency.md', 'debug-handler.bat')) {
+        Write-TestText (Join-Path $legacyProject $relative) ("Project-owned history fixture: $relative`n")
+        $legacyOwnedFiles[$relative] = Get-TestBytes (Join-Path $legacyProject $relative)
+    }
+    $testCount++
+    Write-Host 'PASS: A pinned historical release supplies the actual old consumer installer and lock baseline.'
+
+    $recoverySource = New-SourceVariant 'recovery framework'
+    $recoveryPublisher = Join-Path $recoverySource 'scripts/publish-framework.ps1'
+    Assert-Exit (Invoke-TestScript $recoveryPublisher @('-Version', '1.1.0')) 0 'Prepare the recovery release.'
+    $recoveryCommit = Commit-TestRepository $recoverySource 'Recovery 1.1.0 framework fixture'
+    $compatibilityRef = 'upgrade/compatibility-track'
+    [void](Invoke-TestGit @('-C', $recoverySource, 'branch', $compatibilityRef))
+    Assert-ProjectEntryReadOnly $legacyProject $recoverySource $recoverySource $compatibilityRef @('-Check') 1 'Real old consumer Check reproduces the unsupported project template failure.' 'Invalid project template target'
+    Assert-ProjectEntryReadOnly $legacyProject $recoverySource $recoverySource $compatibilityRef @() 1 'Real old consumer update fails before changing project files.' 'Invalid project template target'
+    $recoveryArguments = @('-ProjectRoot', $legacyProject, '-SourcePath', $recoverySource, '-Repository', $recoverySource, '-Ref', $compatibilityRef)
+    $legacySnapshot = Get-ProjectSnapshot $legacyProject
+    Assert-Exit (Invoke-TestScript $installer ($recoveryArguments + @('-Check'))) 2 'Central current installer can check the real old consumer for recovery.'
+    Assert-Snapshot $legacySnapshot $legacyProject 'Central recovery Check wrote to the historical consumer'
+    Assert-Exit (Invoke-TestScript $installer $recoveryArguments) 0 'Central current installer recovers the real old consumer without Force.'
+    $recoveryLock = Read-TestJson (Join-Path $legacyProject 'AGENTS.lock.json')
+    Assert-Equal '1.1.0' $recoveryLock.frameworkVersion 'Recovery must record the installed release.'
+    Assert-Equal $recoveryCommit $recoveryLock.commit 'Recovery must record the resolved source commit.'
+    Assert-Equal $compatibilityRef $recoveryLock.ref 'Recovery must retain the requested non-default ref.'
+    foreach ($relative in $legacyOwnedFiles.Keys) {
+        Assert-Equal $legacyOwnedFiles[$relative] (Get-TestBytes (Join-Path $legacyProject $relative)) "Recovery replaced project-owned content: $relative"
+    }
+    $testCount++
+    Write-Host 'PASS: The central installer recovers a real historical consumer while retaining its project files and requested ref.'
+
+    # This release needs a newer seed allowlist, so an installed older interpreter
+    # cannot succeed merely by reading the new manifest with its own implementation.
+    $futureSource = Join-Path $fixtureRoot 'future protocol framework'
+    [void](Invoke-TestGit @('clone', '--quiet', '--no-hardlinks', $recoverySource, $futureSource))
+    Initialize-TestRepository $futureSource
+    $futureInstaller = Join-Path $futureSource 'scripts/fetch-agents.ps1'
+    $futureInstallerText = [IO.File]::ReadAllText($futureInstaller, $utf8)
+    $seedGuard = "-ne 'debug-handler.bat' -and"
+    Assert-True ($futureInstallerText.Contains($seedGuard)) 'Future fixture cannot locate the installer seed allowlist guard.'
+    Write-TestText $futureInstaller ($futureInstallerText.Replace($seedGuard, "-ne 'debug-handler.bat' -and `$entry.target -ne 'scripts/seeded-operation.ps1' -and"))
+    $futureSeed = 'scripts/seeded-operation.ps1'
+    Write-TestText (Join-Path $futureSource $futureSeed) "# Future project-owned operation seed.`n"
+    $futureManifestPath = Join-Path $futureSource 'AGENTS.framework.json'
+    $futureManifest = Read-TestJson $futureManifestPath
+    $futureManifest | Add-Member -NotePropertyName installerProtocolVersion -NotePropertyValue 1 -Force
+    $futureManifest.files = @($futureManifest.files) + @([pscustomobject]@{
+        source = $futureSeed; target = $futureSeed; mode = 'seed'
+        sha256 = Get-TestHash ([IO.File]::ReadAllBytes((Join-Path $futureSource $futureSeed)))
+    })
+    Write-TestJson $futureManifestPath $futureManifest
+    Assert-Exit (Invoke-TestScript (Join-Path $futureSource 'scripts/publish-framework.ps1') @('-Version', '1.2.0')) 0 'Prepare a future release requiring its own installer interpreter.'
+    $futureCommit = Commit-TestRepository $futureSource 'Future 1.2.0 installer protocol fixture'
+    [void](Invoke-TestGit @('-C', $futureSource, 'branch', '-f', $compatibilityRef))
+    Assert-ProjectEntryReadOnly $legacyProject $futureSource $recoverySource $compatibilityRef @('-Check') 2 'Installed prior interpreter delegates future Check without changing consumer bytes.'
+
+    $fetchSnapshot = Get-ProjectSnapshot $legacyProject
+    $fetchLockPath = Join-Path $legacyProject 'AGENTS.lock.json'
+    $fetchLockTime = [IO.File]::GetLastWriteTimeUtc($fetchLockPath).Ticks
+    $fetchResult = Invoke-TestScript (Join-Path $legacyProject 'scripts/fetch-agents.ps1') @(
+        '-ProjectRoot', $legacyProject, '-Repository', $futureSource, '-Ref', $compatibilityRef, '-Check')
+    Assert-Exit $fetchResult 2 'Fetched source handoff must use its already-resolved commit from the bare cache.' 'Using the verified installer'
+    Assert-Snapshot $fetchSnapshot $legacyProject 'Fetched source handoff Check wrote to the project'
+    Assert-Equal $fetchLockTime ([IO.File]::GetLastWriteTimeUtc($fetchLockPath).Ticks) 'Fetched source handoff Check rewrote the lock.'
+    $testCount++
+    Write-Host 'PASS: Git fetch into a bare cache delegates a non-default ref without project writes or resolving that ref again.'
+
+    $badInstallerSource = Join-Path $fixtureRoot 'bad installer payload'
+    [void](Invoke-TestGit @('clone', '--quiet', '--no-hardlinks', $futureSource, $badInstallerSource))
+    Initialize-TestRepository $badInstallerSource
+    $executionMarker = Join-Path $fixtureRoot 'unverified-installer-executed.txt'
+    $badInstallerPath = Join-Path $badInstallerSource 'scripts/fetch-agents.ps1'
+    $markerStatement = "[IO.File]::WriteAllText('" + $executionMarker.Replace("'", "''") + "', 'Executed unverified source installer')"
+    Write-TestText $badInstallerPath ($markerStatement + "`nexit 77`n")
+    [void](Commit-TestRepository $badInstallerSource 'Corrupt installer bytes without updating manifest hash')
+    [void](Invoke-TestGit @('-C', $badInstallerSource, 'branch', '-f', $compatibilityRef))
+    Assert-ProjectEntryReadOnly $legacyProject $badInstallerSource $recoverySource $compatibilityRef @('-Check') 1 'Source installer hash mismatch blocks handoff before execution.' 'Payload hash mismatch'
+    Assert-True (-not [IO.File]::Exists($executionMarker)) 'A source installer with an invalid payload hash was executed.'
+
+    $installedLegacyInstaller = Join-Path $legacyProject 'scripts/fetch-agents.ps1'
+    Write-TestText $installedLegacyInstaller ([IO.File]::ReadAllText($installedLegacyInstaller, $utf8) + "`n# Local customized installer fixture.`n")
+    $customInstallerBytes = Get-TestBytes $installedLegacyInstaller
+    Assert-ProjectEntryReadOnly $legacyProject $futureSource $recoverySource $compatibilityRef @('-Check') 3 'Delegated Check retains conflict protection for the locally customized installed interpreter.' 'Local conflicts'
+    Assert-ProjectEntryReadOnly $legacyProject $futureSource $recoverySource $compatibilityRef @() 1 'Delegated update refuses customized installed interpreter replacement without Force.' 'Local framework changes'
+    Assert-Exit (Invoke-ProjectEntry $legacyProject $futureSource $recoverySource $compatibilityRef @('-Force')) 0 'Delegated Force backs up the customized interpreter and completes the future update.'
+    $interpreterBackups = @([IO.Directory]::GetFiles((Join-Path $legacyProject '.agents/backups'), 'fetch-agents.ps1', [IO.SearchOption]::AllDirectories))
+    Assert-Equal 1 $interpreterBackups.Count 'Delegated Force must back up the customized installed interpreter exactly once.'
+    Assert-Equal $customInstallerBytes (Get-TestBytes $interpreterBackups[0]) 'Delegated Force did not preserve customized interpreter bytes in backup.'
+    Assert-Equal (Get-TestBytes $futureInstaller) (Get-TestBytes $installedLegacyInstaller) 'Future source interpreter bytes were not installed.'
+    Assert-Equal (Get-TestBytes (Join-Path $futureSource $futureSeed)) (Get-TestBytes (Join-Path $legacyProject $futureSeed)) 'The future seed was not initialized by the source interpreter.'
+    $futureLock = Read-TestJson (Join-Path $legacyProject 'AGENTS.lock.json')
+    Assert-Equal '1.2.0' $futureLock.frameworkVersion 'Delegated synchronization must record the future version.'
+    Assert-Equal $futureCommit $futureLock.commit 'Delegated synchronization must use the same resolved source commit.'
+    Assert-Equal $compatibilityRef $futureLock.ref 'Delegation must not replace the requested ref with a commit SHA.'
+    Assert-Equal $recoverySource $futureLock.repository 'Delegation must retain the selected repository independently of SourcePath.'
+    $testCount++
+    Write-Host 'PASS: Delegated Force validates the snapshot, installs a new seed, retains repository/ref, and backs up the customized interpreter.'
+    Assert-ProjectEntryReadOnly $legacyProject $futureSource $recoverySource $compatibilityRef @('-Check') 0 'The updated future interpreter performs a current read-only check without recursive handoff.'
+
+    Assert-ProjectEntryReadOnly $legacyProject $legacySource $legacySource 'main' @('-Check') 1 'Real historical downgrade Check is refused without Force.' 'older'
+    Assert-ProjectEntryReadOnly $legacyProject $legacySource $legacySource 'main' @() 1 'Real historical downgrade update is refused without Force.' 'older'
+    Assert-Exit (Invoke-ProjectEntry $legacyProject $legacySource $legacySource 'main' @('-Force')) 0 'Force permits rollback to the real historical installer without unsupported handoff parameters.'
+    $rollbackLock = Read-TestJson (Join-Path $legacyProject 'AGENTS.lock.json')
+    Assert-Equal '1.0.0' $rollbackLock.frameworkVersion 'Historical rollback must record version 1.0.0.'
+    Assert-Equal $legacyCommit $rollbackLock.commit 'Historical rollback must record the old source commit.'
+    Assert-Equal (Get-TestBytes $legacyInstaller) (Get-TestBytes $installedLegacyInstaller) 'Historical rollback must restore the actual old interpreter bytes.'
+    foreach ($relative in $legacyOwnedFiles.Keys) {
+        Assert-Equal $legacyOwnedFiles[$relative] (Get-TestBytes (Join-Path $legacyProject $relative)) "Historical rollback replaced project-owned content: $relative"
+    }
+    Assert-True ([IO.File]::Exists((Join-Path $legacyProject $futureSeed))) 'Historical rollback removed an initialized project-owned future seed.'
+    $testCount++
+    Write-Host 'PASS: Force can roll back to the actual old release while preserving project-owned files and future seeds.'
     $successful = $true
     Write-Host "All $testCount integration checks passed; $skipCount platform-specific checks skipped."
 } catch {

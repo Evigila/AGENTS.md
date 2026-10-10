@@ -49,14 +49,14 @@ The tree includes every maintained file in this central source repository outsid
 | `AGENTS.framework.json` | Versioned payload source/target/mode/digest inventory; excludes its own digest |
 | `AGENTS.ensure.json` | Audit state for this central source; never imported as consumer completion evidence |
 | `.agents/skills/` | Audit and explicit synchronization workflows, with optional Codex UI metadata |
-| `scripts/fetch-agents.ps1` | Validates a single committed source snapshot, computes a plan, protects project facts/customizations, writes payload then lock, and rolls back failed writes where possible |
+| `scripts/fetch-agents.ps1` | Resolves one source commit, verifies and hands off to its installer when protocol `1` requests different code, validates the snapshot, protects project facts/customizations, and writes payload then lock with best-effort rollback |
 | `fetch-agents.bat` | Windows shell/Git discovery, trusted bootstrap installer acquisition, argument forwarding, cleanup and exit-code propagation |
 | `debug-handler.bat` | Zero-byte seed for the project-owned unified operation entry point; no project operations are implemented in this source repository |
 | `scripts/` | Framework installer/publisher implementations and the required location for project operation scripts |
 | `scripts/publish-framework.ps1` | Maintainer-only manifest digest generation and strictly increasing release version preparation |
 | `templates/` | Unverified consumer architecture/dependency templates, unaudited state, and empty directory marker |
-| `tests/test-sync.ps1` | Package-free temporary Git integration fixtures and preservation/conflict/regression assertions |
-| `.github/workflows/verify.yml` | Windows PowerShell 5.1 / Windows PowerShell 7 / Linux PowerShell 7 verification matrix |
+| `tests/test-sync.ps1` | Package-free temporary Git fixtures, real historical-installer migration, source-installer handoff, and preservation/conflict/regression assertions |
+| `.github/workflows/verify.yml` | Windows PowerShell 5.1 / Windows PowerShell 7 / Linux PowerShell 7 verification matrix; checks out Git history for historical-installer fixtures |
 | `.gitattributes` | Text checkout normalization; BAT checkout uses CRLF |
 | `.gitignore` | Recovery and atomic-write intermediate exclusions |
 | `README.md` and `README_zh-CN.md` | English and Simplified Chinese installation, synchronization, script layout, and ownership guidance |
@@ -70,6 +70,8 @@ There are no solution/project files, application assemblies, shared runtime libr
 ## Runtime and persistence boundaries
 
 The launcher can clone the central `main` branch into a temporary directory to obtain its installer. The installer either fetches the selected repository/ref into a temporary bare repository or reads a supplied local clone. It resolves one commit and reads regular Git blobs from that commit. No target checkout, remote mutation, Git staging, branch change, or commit occurs.
+
+Manifest installer protocol `1` enables source-snapshot handoff before payload-target and lock-path validation. The running installer verifies the source installer's regular Git blob and normalized manifest hash, writes it into a temporary `scripts/` directory, and runs it with the same PowerShell edition. The child uses an internal `ResolvedCommit` parameter with the existing source repository to avoid fetching or resolving a moving ref again; the original repository/ref still enters the installation lock. The child's exit code is propagated, and bounded temporary caches are cleaned up. Manifests without the protocol field are processed directly for historical compatibility.
 
 The installation manifest defines managed files and seed-only project files. `debug-handler.bat` is a seed, never a managed file; any existing content survives initialization, updates, and `-Force`. The generated consumer `AGENTS.lock.json` records the imported commit, source/ref, version, manifest digest, and owned-file hashes. Normalized text hashes protect both uncommitted and committed local modifications. Project-added files have no ownership entry and remain untouched. Managed files retired by a release can be removed only through the old lock's ownership baseline.
 

@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
-  "frameworkVersion": "1.1.0",
+  "installerProtocolVersion": 1,
+  "frameworkVersion": "1.1.1",
   "repository": "Evigila/AGENTS.md",
   "files": [
     {
@@ -25,13 +26,13 @@
       "source": "scripts/fetch-agents.ps1",
       "target": "scripts/fetch-agents.ps1",
       "mode": "managed",
-      "sha256": "cb6e3784cf95668f91d5a0c4a0ef45718a6077e4b3bed81ee9125b16c4391f98"
+      "sha256": "be0f72d8dce1433a5c90ab32ac98c912f8101204709825c364e630fab6cbb333"
     },
     {
       "source": "docs-ai/common/rules.md",
       "target": "docs-ai/common/rules.md",
       "mode": "managed",
-      "sha256": "a779b7402a9639773533bf213b77bfa655ccf0cce566efc4bb4a3d09e7c2b410"
+      "sha256": "dd970e2f84b3ce7b81fad21f53e47dae3c7a3d645400b6b50edc7643c206c9cc"
     },
     {
       "source": "docs-ai/common/codedesign.md",
@@ -61,7 +62,7 @@
       "source": ".agents/skills/sync-agents-framework/SKILL.md",
       "target": ".agents/skills/sync-agents-framework/SKILL.md",
       "mode": "managed",
-      "sha256": "e243b857cb67e3a31afcca6ba538eecc37761ea7a6513bce0bbb6d90b31e9e81"
+      "sha256": "c54cfe2450db3a3e1dca4e2b943939c38818312b8241ecf41d433409f2a6fe30"
     },
     {
       "source": ".agents/skills/sync-agents-framework/agents/openai.yaml",

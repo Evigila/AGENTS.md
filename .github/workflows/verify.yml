@@ -12,6 +12,9 @@ jobs:
   integration:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
     strategy:
       fail-fast: false
       matrix:
@@ -28,14 +31,11 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Check release hashes
-        shell: ${{ matrix.shell }}
         run: ./scripts/publish-framework.ps1 -Check
       - name: Test synchronization
-        shell: ${{ matrix.shell }}
         run: ./tests/test-sync.ps1
       - name: Smoke test Windows bootstrap
         if: runner.os == 'Windows'
-        shell: ${{ matrix.shell }}
         run: |
           $target = Join-Path $env:RUNNER_TEMP ('agents bootstrap ' + [Guid]::NewGuid().ToString('N'))
           New-Item -ItemType Directory -Path $target | Out-Null

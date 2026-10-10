@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit Project Documentation"
+  short_description: "Verify project documentation and audit state"
+  default_prompt: "Use $audit-project-docs to audit this repository and report unresolved facts."

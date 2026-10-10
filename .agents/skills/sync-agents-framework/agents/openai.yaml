@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sync AGENTS Framework"
+  short_description: "Check and synchronize the shared AGENTS framework"
+  default_prompt: "Use $sync-agents-framework to check for a newer framework version and apply an authorized update."
